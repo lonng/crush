@@ -114,8 +114,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 
 	app.setupEvents()
 
-	// Check for updates in the background.
-	go app.checkForUpdates(ctx)
+	// Check for updates in the background. Embedded/in-process hosts can
+	// disable this side effect through runtime overrides.
+	if !store.Overrides().DisableUpdateCheck {
+		go app.checkForUpdates(ctx)
+	}
 
 	go app.MCPManager.Initialize(ctx, app.Permissions, store)
 

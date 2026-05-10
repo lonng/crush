@@ -29,6 +29,12 @@
    - MCP tools、resource tools、crush_info、bash/job tools 优先使用传入的 manager。
    - `workspace.AppWorkspace` 和 `backend.Workspace` 的 MCP/LSP 操作必须读取对应 workspace 的 manager，不能回退到包级全局状态。
 
+5. Loop Desktop 嵌入 API
+   - `exports` 是 Loop Desktop 等外部宿主唯一应该直接依赖的公共嵌入入口；不要让宿主 import `internal/*`。
+   - `internal/config.LoadEmbedded` 从内存中的 `config.Config` 构建 `ConfigStore`，不得读取/写入 working directory 或用户全局 `crush.json`。
+   - Embedded `ConfigStore` 使用 runtime overrides（例如 `SkipPermissionRequests`、`DisableUpdateCheck`）承载宿主控制项，并且 `ReloadFromDisk` 对 embedded store 必须保持 no-op。
+   - `exports.NewApp` 必须继续创建 per-App data dir / DB / app 实例，默认禁用 provider auto-update、metrics、notifications、progress、update check，并通过 `exports.App` 暴露运行、消息/会话订阅、当前 session ID 与 graceful shutdown。
+
 ## 合并上游时最容易冲突的文件
 
 重点检查这些文件。如果 upstream 改了相同区域，解决冲突时以“保留实例化 manager + 保留默认 wrapper 兼容”为准：
@@ -40,6 +46,8 @@
 - `internal/agent/tools/mcp/init_test.go`
 - `internal/shell/background.go`
 - `internal/app/app.go`
+- `internal/config/embedded.go`
+- `internal/config/store.go`
 - `internal/app/lsp_events.go`
 - `internal/agent/agent.go`
 - `internal/agent/coordinator.go`
@@ -57,6 +65,8 @@
 - `internal/ui/completions/completions.go`
 - `internal/ui/model/ui.go`
 - `internal/ui/model/lsp.go`
+- `exports/exports.go`
+- `exports/exports_test.go`
 
 ## 给 AI 的上游合并 Prompt
 
@@ -74,11 +84,13 @@
 6. `workspace.AppWorkspace` 和 `backend.Workspace` 中的 MCP/LSP 查询、刷新、Docker MCP 启停、resource/prompt 读取必须使用当前 workspace/app 的 manager，不要调用默认全局 wrapper。
 7. 如果 upstream 新增了 MCP/shell/LSP 相关调用点，要优先添加 WithManager/manager 参数；只有 CLI legacy fallback 才可以使用 default manager。
 8. 解决冲突后运行 `gofmt`，并至少执行：
+   - `go test ./exports ./internal/config`
    - `go test ./internal/agent/tools/mcp`
    - `go test ./internal/app ./internal/agent ./internal/agent/tools ./internal/workspace ./internal/backend ./internal/ui/model ./internal/ui/completions`
    - 如果时间允许，执行 `go test ./...`
 9. 合并完成后，检查 `rg "mcp\\.(GetStates|Tools|RunTool|ListResources|ReadResource|RefreshTools|RefreshPrompts|RefreshResources|Initialize|InitializeSingle|DisableSingle|Close|SubscribeEvents|WaitForInit|Prompts|Resources|GetPromptMessages)\\(" internal -g '*.go'`：除 legacy fallback 或明确不属于 app/workspace 的默认 CLI 路径外，不应出现直接使用 default manager 的新增业务调用。
-10. 最终汇报时列出：冲突文件、保留的 loop 分支改造点、测试命令和结果、仍需人工关注的 upstream 行为变化。
+10. 检查 embedded API：`exports` 不能重新引入写 workingDir/crush.json 的临时配置方案；`LoadEmbedded` 不能读取用户全局或项目配置；embedded app 的 update check 默认必须关闭。
+11. 最终汇报时列出：冲突文件、保留的 loop 分支改造点、测试命令和结果、仍需人工关注的 upstream 行为变化。
 ```
 
 ## 人工 Review Checklist
@@ -90,3 +102,5 @@
 - 是否有新 UI/backend/workspace 路径绕过当前 workspace 的 manager。
 - App shutdown 是否只清理当前 App 的 MCP clients / background shells / LSP clients。
 - 默认 wrapper 是否仍能让 upstream CLI 的原有调用编译通过。
+- `exports` API 是否仍是 Loop Desktop 嵌入唯一入口，且没有泄露新的宿主必须 import 的 `internal/*` 包。
+- embedded config 是否仍只使用内存配置 + 宿主传入 data dir，未写入项目 `crush.json`。

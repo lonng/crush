@@ -189,6 +189,13 @@ func blockFuncs() []shell.BlockFunc {
 }
 
 func NewBashTool(permissions permission.Service, workingDir string, attribution *config.Attribution, modelName string) fantasy.AgentTool {
+	return NewBashToolWithManager(permissions, workingDir, attribution, modelName, shell.GetBackgroundShellManager())
+}
+
+func NewBashToolWithManager(permissions permission.Service, workingDir string, attribution *config.Attribution, modelName string, bgManager *shell.BackgroundShellManager) fantasy.AgentTool {
+	if bgManager == nil {
+		bgManager = shell.GetBackgroundShellManager()
+	}
 	return fantasy.NewAgentTool(
 		BashToolName,
 		string(bashDescription(attribution, modelName)),
@@ -239,7 +246,6 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			// If explicitly requested as background, start immediately with detached context
 			if params.RunInBackground {
 				startTime := time.Now()
-				bgManager := shell.GetBackgroundShellManager()
 				bgManager.Cleanup()
 				// Use background context so it continues after tool returns
 				bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description)
@@ -295,7 +301,6 @@ func NewBashTool(permissions permission.Service, workingDir string, attribution 
 			startTime := time.Now()
 
 			// Start with detached context so it can survive if moved to background
-			bgManager := shell.GetBackgroundShellManager()
 			bgManager.Cleanup()
 			bgShell, err := bgManager.Start(context.Background(), execWorkingDir, blockFuncs(), params.Command, params.Description)
 			if err != nil {

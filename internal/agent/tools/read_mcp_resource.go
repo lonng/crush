@@ -31,6 +31,13 @@ const ReadMCPResourceToolName = "read_mcp_resource"
 var readMCPResourceDescription []byte
 
 func NewReadMCPResourceTool(cfg *config.ConfigStore, permissions permission.Service) fantasy.AgentTool {
+	return NewReadMCPResourceToolWithManager(cfg, permissions, mcp.DefaultManager())
+}
+
+func NewReadMCPResourceToolWithManager(cfg *config.ConfigStore, permissions permission.Service, manager *mcp.Manager) fantasy.AgentTool {
+	if manager == nil {
+		manager = mcp.DefaultManager()
+	}
 	return fantasy.NewParallelAgentTool(
 		ReadMCPResourceToolName,
 		FirstLineDescription(readMCPResourceDescription),
@@ -68,7 +75,7 @@ func NewReadMCPResourceTool(cfg *config.ConfigStore, permissions permission.Serv
 				return NewPermissionDeniedResponse(), nil
 			}
 
-			contents, err := mcp.ReadResource(ctx, cfg, params.MCPName, params.URI)
+			contents, err := manager.ReadResource(ctx, cfg, params.MCPName, params.URI)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}

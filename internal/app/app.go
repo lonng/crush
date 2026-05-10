@@ -60,7 +60,10 @@ type App struct {
 
 	AgentCoordinator agent.Coordinator
 
-	LSPManager *lsp.Manager
+	LSPManager   *lsp.Manager
+	LSPEvents    *LSPEventManager
+	MCPManager   *mcp.Manager
+	ShellManager *shell.BackgroundShellManager
 
 	config *config.ConfigStore
 
@@ -89,12 +92,15 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	}
 
 	app := &App{
-		Sessions:    sessions,
-		Messages:    messages,
-		History:     files,
-		Permissions: permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools),
-		FileTracker: filetracker.NewService(q),
-		LSPManager:  lsp.NewManager(store),
+		Sessions:     sessions,
+		Messages:     messages,
+		History:      files,
+		Permissions:  permission.NewPermissionService(store.WorkingDir(), skipPermissionsRequests, allowedTools),
+		FileTracker:  filetracker.NewService(q),
+		LSPManager:   lsp.NewManager(store),
+		LSPEvents:    NewLSPEventManager(),
+		MCPManager:   mcp.NewManager(),
+		ShellManager: shell.NewBackgroundShellManager(),
 
 		globalCtx: ctx,
 
@@ -111,13 +117,13 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	// Check for updates in the background.
 	go app.checkForUpdates(ctx)
 
-	go mcp.Initialize(ctx, app.Permissions, store)
+	go app.MCPManager.Initialize(ctx, app.Permissions, store)
 
 	// cleanup database upon app shutdown
 	app.cleanupFuncs = append(
 		app.cleanupFuncs,
 		func(context.Context) error { return conn.Close() },
-		func(ctx context.Context) error { return mcp.Close(ctx) },
+		func(ctx context.Context) error { return app.MCPManager.Close(ctx) },
 	)
 
 	// TODO: remove the concept of agent config, most likely.
@@ -132,11 +138,11 @@ func New(ctx context.Context, conn *sql.DB, store *config.ConfigStore) (*App, er
 	// Set up callback for LSP state updates.
 	app.LSPManager.SetCallback(func(name string, client *lsp.Client) {
 		if client == nil {
-			updateLSPState(name, lsp.StateUnstarted, nil, nil, 0)
+			app.LSPEvents.updateState(name, lsp.StateUnstarted, nil, nil, 0)
 			return
 		}
-		client.SetDiagnosticsCallback(updateLSPDiagnostics)
-		updateLSPState(name, client.GetServerState(), nil, client, 0)
+		client.SetDiagnosticsCallback(app.LSPEvents.updateDiagnostics)
+		app.LSPEvents.updateState(name, client.GetServerState(), nil, client, 0)
 	})
 	go app.LSPManager.TrackConfigured()
 
@@ -261,7 +267,7 @@ func (app *App) RunNonInteractive(ctx context.Context, output io.Writer, prompt,
 	}
 
 	// Wait for MCP initialization to complete before reading MCP tools.
-	if err := mcp.WaitForInit(ctx); err != nil {
+	if err := app.MCPManager.WaitForInit(ctx); err != nil {
 		return fmt.Errorf("failed to wait for MCP initialization: %w", err)
 	}
 
@@ -477,8 +483,8 @@ func (app *App) setupEvents() {
 	setupSubscriber(ctx, app.serviceEventsWG, "permissions-notifications", app.Permissions.SubscribeNotifications, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "history", app.History.Subscribe, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "agent-notifications", app.agentNotifications.Subscribe, app.events)
-	setupSubscriber(ctx, app.serviceEventsWG, "mcp", mcp.SubscribeEvents, app.events)
-	setupSubscriber(ctx, app.serviceEventsWG, "lsp", SubscribeLSPEvents, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "mcp", app.MCPManager.SubscribeEvents, app.events)
+	setupSubscriber(ctx, app.serviceEventsWG, "lsp", app.LSPEvents.SubscribeEvents, app.events)
 	setupSubscriber(ctx, app.serviceEventsWG, "skills", skills.SubscribeEvents, app.events)
 	cleanupFunc := func(context.Context) error {
 		cancel()
@@ -529,6 +535,8 @@ func (app *App) InitCoderAgent(ctx context.Context) error {
 		app.History,
 		app.FileTracker,
 		app.LSPManager,
+		app.MCPManager,
+		app.ShellManager,
 		app.agentNotifications,
 	)
 	if err != nil {
@@ -596,7 +604,7 @@ func (app *App) Shutdown() {
 
 	// Kill all background shells.
 	wg.Go(func() {
-		shell.GetBackgroundShellManager().KillAll(shutdownCtx)
+		app.ShellManager.KillAll(shutdownCtx)
 	})
 
 	// Shutdown all LSP clients.

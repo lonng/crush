@@ -61,20 +61,28 @@ type BackgroundShell struct {
 
 // BackgroundShellManager manages background shell instances.
 type BackgroundShellManager struct {
-	shells *csync.Map[string, *BackgroundShell]
+	shells    *csync.Map[string, *BackgroundShell]
+	idCounter atomic.Uint64
 }
 
 var (
 	backgroundManager     *BackgroundShellManager
 	backgroundManagerOnce sync.Once
-	idCounter             atomic.Uint64
 )
 
-// newBackgroundShellManager creates a new BackgroundShellManager instance.
-func newBackgroundShellManager() *BackgroundShellManager {
+// NewBackgroundShellManager creates an isolated BackgroundShellManager
+// instance. Embedded applications should use one manager per app/workspace so
+// background jobs do not leak across in-process Crush instances.
+func NewBackgroundShellManager() *BackgroundShellManager {
 	return &BackgroundShellManager{
 		shells: csync.NewMap[string, *BackgroundShell](),
 	}
+}
+
+// newBackgroundShellManager creates a new BackgroundShellManager instance.
+// Kept for existing package tests and internal callers.
+func newBackgroundShellManager() *BackgroundShellManager {
+	return NewBackgroundShellManager()
 }
 
 // GetBackgroundShellManager returns the singleton background shell manager.
@@ -92,7 +100,7 @@ func (m *BackgroundShellManager) Start(ctx context.Context, workingDir string, b
 		return nil, fmt.Errorf("maximum number of background jobs (%d) reached. Please terminate or wait for some jobs to complete", MaxBackgroundJobs)
 	}
 
-	id := fmt.Sprintf("%03X", idCounter.Add(1))
+	id := fmt.Sprintf("%03X", m.idCounter.Add(1))
 
 	shell := NewShell(&Options{
 		WorkingDir: workingDir,

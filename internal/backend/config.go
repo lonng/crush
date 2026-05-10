@@ -6,7 +6,6 @@ import (
 	"fmt"
 
 	"github.com/charmbracelet/crush/internal/agent"
-	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/commands"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/oauth"
@@ -129,14 +128,14 @@ func (b *Backend) EnableDockerMCP(ctx context.Context, workspaceID string) error
 		return err
 	}
 
-	if err := mcptools.InitializeSingle(ctx, config.DockerMCPName, ws.Cfg); err != nil {
-		disableErr := mcptools.DisableSingle(ws.Cfg, config.DockerMCPName)
+	if err := ws.MCPManager.InitializeSingle(ctx, config.DockerMCPName, ws.Cfg); err != nil {
+		disableErr := ws.MCPManager.DisableSingle(ws.Cfg, config.DockerMCPName)
 		delete(ws.Cfg.Config().MCP, config.DockerMCPName)
 		return fmt.Errorf("failed to start docker MCP: %w", errors.Join(err, disableErr))
 	}
 
 	if err := ws.Cfg.PersistDockerMCPConfig(mcpConfig); err != nil {
-		disableErr := mcptools.DisableSingle(ws.Cfg, config.DockerMCPName)
+		disableErr := ws.MCPManager.DisableSingle(ws.Cfg, config.DockerMCPName)
 		delete(ws.Cfg.Config().MCP, config.DockerMCPName)
 		return fmt.Errorf("docker MCP started but failed to persist configuration: %w", errors.Join(err, disableErr))
 	}
@@ -152,7 +151,7 @@ func (b *Backend) DisableDockerMCP(workspaceID string) error {
 		return err
 	}
 
-	if err := mcptools.DisableSingle(ws.Cfg, config.DockerMCPName); err != nil {
+	if err := ws.MCPManager.DisableSingle(ws.Cfg, config.DockerMCPName); err != nil {
 		return fmt.Errorf("failed to disable docker MCP: %w", err)
 	}
 
@@ -169,7 +168,7 @@ func (b *Backend) RefreshMCPTools(ctx context.Context, workspaceID, name string)
 	if err != nil {
 		return err
 	}
-	mcptools.RefreshTools(ctx, ws.Cfg, name)
+	ws.MCPManager.RefreshTools(ctx, ws.Cfg, name)
 	return nil
 }
 
@@ -179,7 +178,7 @@ func (b *Backend) ReadMCPResource(ctx context.Context, workspaceID, name, uri st
 	if err != nil {
 		return nil, err
 	}
-	contents, err := mcptools.ReadResource(ctx, ws.Cfg, name, uri)
+	contents, err := ws.MCPManager.ReadResource(ctx, ws.Cfg, name, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -201,7 +200,7 @@ func (b *Backend) GetMCPPrompt(workspaceID, clientID, promptID string, args map[
 	if err != nil {
 		return "", err
 	}
-	return commands.GetMCPPrompt(ws.Cfg, clientID, promptID, args)
+	return commands.GetMCPPromptWithManager(ws.Cfg, clientID, promptID, args, ws.MCPManager)
 }
 
 // GetWorkingDir returns the working directory for a workspace.

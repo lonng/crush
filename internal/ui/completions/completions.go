@@ -67,6 +67,8 @@ type Completions struct {
 
 	allItems []list.FilterableItem
 	filtered []list.FilterableItem
+
+	resourceLoader func() []ResourceCompletionValue
 }
 
 type namePriorityRule struct {
@@ -102,12 +104,21 @@ func New(normalStyle, focusedStyle, matchStyle lipgloss.Style) *Completions {
 	l.SetReverse(true)
 
 	return &Completions{
-		keyMap:       DefaultKeyMap(),
-		list:         l,
-		normalStyle:  normalStyle,
-		focusedStyle: focusedStyle,
-		matchStyle:   matchStyle,
+		keyMap:         DefaultKeyMap(),
+		list:           l,
+		normalStyle:    normalStyle,
+		focusedStyle:   focusedStyle,
+		matchStyle:     matchStyle,
+		resourceLoader: loadMCPResources,
 	}
+}
+
+// SetResourceLoader updates the loader used for MCP resource completions.
+func (c *Completions) SetResourceLoader(loader func() []ResourceCompletionValue) {
+	if loader == nil {
+		loader = loadMCPResources
+	}
+	c.resourceLoader = loader
 }
 
 // SetStyles updates the styles used when rendering completion items.
@@ -149,7 +160,7 @@ func (c *Completions) Open(depth, limit int) tea.Cmd {
 			msg.Files = loadFiles(depth, limit)
 		})
 		wg.Go(func() {
-			msg.Resources = loadMCPResources()
+			msg.Resources = c.resourceLoader()
 		})
 		wg.Wait()
 		return msg

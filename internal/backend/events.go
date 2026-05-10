@@ -24,12 +24,12 @@ func (b *Backend) SubscribeEvents(ctx context.Context, workspaceID string) (<-ch
 
 // GetLSPStates returns the state of all LSP clients.
 func (b *Backend) GetLSPStates(workspaceID string) (map[string]app.LSPClientInfo, error) {
-	_, err := b.GetWorkspace(workspaceID)
+	ws, err := b.GetWorkspace(workspaceID)
 	if err != nil {
 		return nil, err
 	}
 
-	return app.GetLSPStates(), nil
+	return ws.LSPEvents.GetStates(), nil
 }
 
 // GetLSPDiagnostics returns diagnostics for a specific LSP client in
@@ -94,16 +94,28 @@ func (b *Backend) LSPStopAll(ctx context.Context, workspaceID string) error {
 }
 
 // MCPGetStates returns the current state of all MCP clients.
-func (b *Backend) MCPGetStates(_ string) map[string]mcptools.ClientInfo {
-	return mcptools.GetStates()
+func (b *Backend) MCPGetStates(workspaceID string) map[string]mcptools.ClientInfo {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return map[string]mcptools.ClientInfo{}
+	}
+	return ws.MCPManager.GetStates()
 }
 
 // MCPRefreshPrompts refreshes prompts for a named MCP client.
-func (b *Backend) MCPRefreshPrompts(ctx context.Context, _ string, name string) {
-	mcptools.RefreshPrompts(ctx, name)
+func (b *Backend) MCPRefreshPrompts(ctx context.Context, workspaceID string, name string) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return
+	}
+	ws.MCPManager.RefreshPrompts(ctx, name)
 }
 
 // MCPRefreshResources refreshes resources for a named MCP client.
-func (b *Backend) MCPRefreshResources(ctx context.Context, _ string, name string) {
-	mcptools.RefreshResources(ctx, name)
+func (b *Backend) MCPRefreshResources(ctx context.Context, workspaceID string, name string) {
+	ws, err := b.GetWorkspace(workspaceID)
+	if err != nil {
+		return
+	}
+	ws.MCPManager.RefreshResources(ctx, name)
 }

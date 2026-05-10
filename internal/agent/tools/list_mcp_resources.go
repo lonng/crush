@@ -29,6 +29,13 @@ const ListMCPResourcesToolName = "list_mcp_resources"
 var listMCPResourcesDescription []byte
 
 func NewListMCPResourcesTool(cfg *config.ConfigStore, permissions permission.Service) fantasy.AgentTool {
+	return NewListMCPResourcesToolWithManager(cfg, permissions, mcp.DefaultManager())
+}
+
+func NewListMCPResourcesToolWithManager(cfg *config.ConfigStore, permissions permission.Service, manager *mcp.Manager) fantasy.AgentTool {
+	if manager == nil {
+		manager = mcp.DefaultManager()
+	}
 	return fantasy.NewParallelAgentTool(
 		ListMCPResourcesToolName,
 		FirstLineDescription(listMCPResourcesDescription),
@@ -62,7 +69,7 @@ func NewListMCPResourcesTool(cfg *config.ConfigStore, permissions permission.Ser
 				return NewPermissionDeniedResponse(), nil
 			}
 
-			resources, err := mcp.ListResources(ctx, cfg, params.MCPName)
+			resources, err := manager.ListResources(ctx, cfg, params.MCPName)
 			if err != nil {
 				return fantasy.NewTextErrorResponse(err.Error()), nil
 			}

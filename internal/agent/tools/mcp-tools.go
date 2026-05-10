@@ -20,14 +20,25 @@ var whitelistDockerTools = []string{
 	"mcp_docker_code-mode",
 }
 
-// GetMCPTools gets all the currently available MCP tools.
+// GetMCPTools gets all the currently available MCP tools from the default MCP
+// manager.
 func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd string) []*Tool {
+	return GetMCPToolsWithManager(permissions, cfg, wd, mcp.DefaultManager())
+}
+
+// GetMCPToolsWithManager gets all the currently available MCP tools from the
+// supplied MCP manager.
+func GetMCPToolsWithManager(permissions permission.Service, cfg *config.ConfigStore, wd string, manager *mcp.Manager) []*Tool {
+	if manager == nil {
+		manager = mcp.DefaultManager()
+	}
 	var result []*Tool
-	for mcpName, tools := range mcp.Tools() {
+	for mcpName, tools := range manager.Tools() {
 		for _, tool := range tools {
 			result = append(result, &Tool{
 				mcpName:     mcpName,
 				tool:        tool,
+				mcpManager:  manager,
 				permissions: permissions,
 				workingDir:  wd,
 				cfg:         cfg,
@@ -41,6 +52,7 @@ func GetMCPTools(permissions permission.Service, cfg *config.ConfigStore, wd str
 type Tool struct {
 	mcpName         string
 	tool            *mcp.Tool
+	mcpManager      *mcp.Manager
 	cfg             *config.ConfigStore
 	permissions     permission.Service
 	workingDir      string
@@ -124,7 +136,11 @@ func (m *Tool) Run(ctx context.Context, params fantasy.ToolCall) (fantasy.ToolRe
 		}
 	}
 
-	result, err := mcp.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
+	manager := m.mcpManager
+	if manager == nil {
+		manager = mcp.DefaultManager()
+	}
+	result, err := manager.RunTool(ctx, m.cfg, m.mcpName, m.tool.Name, params.Input)
 	if err != nil {
 		return fantasy.NewTextErrorResponse(err.Error()), nil
 	}

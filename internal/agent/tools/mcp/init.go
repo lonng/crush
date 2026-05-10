@@ -52,13 +52,45 @@ func (s *ClientSession) Close() error {
 	return s.ClientSession.Close()
 }
 
-var (
-	sessions = csync.NewMap[string, *ClientSession]()
-	states   = csync.NewMap[string, ClientInfo]()
-	broker   = pubsub.NewBroker[Event]()
-	initOnce sync.Once
-	initDone = make(chan struct{})
-)
+// Manager owns MCP client state for one Crush app/workspace instance.
+//
+// Historically this package kept sessions, state, prompts, resources, tools, and
+// events in package globals. That makes the CLI simple, but it also prevents
+// embedding Crush multiple times in one process because independent app
+// instances would share MCP clients. Manager keeps the same behavior behind an
+// explicit object while the package-level functions below delegate to a default
+// manager for existing callers.
+type Manager struct {
+	sessions     *csync.Map[string, *ClientSession]
+	states       *csync.Map[string, ClientInfo]
+	allTools     *csync.Map[string, []*Tool]
+	allPrompts   *csync.Map[string, []*Prompt]
+	allResources *csync.Map[string, []*Resource]
+	broker       *pubsub.Broker[Event]
+	initOnce     sync.Once
+	initDone     chan struct{}
+}
+
+// NewManager creates an isolated MCP manager. Use one Manager per embedded
+// Crush app/workspace.
+func NewManager() *Manager {
+	return &Manager{
+		sessions:     csync.NewMap[string, *ClientSession](),
+		states:       csync.NewMap[string, ClientInfo](),
+		allTools:     csync.NewMap[string, []*Tool](),
+		allPrompts:   csync.NewMap[string, []*Prompt](),
+		allResources: csync.NewMap[string, []*Resource](),
+		broker:       pubsub.NewBroker[Event](),
+		initDone:     make(chan struct{}),
+	}
+}
+
+var defaultManager = NewManager()
+
+// DefaultManager returns the package-level singleton used by legacy callers.
+func DefaultManager() *Manager {
+	return defaultManager
+}
 
 // State represents the current state of an MCP client
 type State int
@@ -121,25 +153,45 @@ type ClientInfo struct {
 	ConnectedAt time.Time
 }
 
-// SubscribeEvents returns a channel for MCP events
+// SubscribeEvents returns a channel for MCP events from the default manager.
 func SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
-	return broker.Subscribe(ctx)
+	return defaultManager.SubscribeEvents(ctx)
 }
 
-// GetStates returns the current state of all MCP clients
+// SubscribeEvents returns a channel for MCP events.
+func (m *Manager) SubscribeEvents(ctx context.Context) <-chan pubsub.Event[Event] {
+	return m.broker.Subscribe(ctx)
+}
+
+// GetStates returns the current state of all MCP clients from the default manager.
 func GetStates() map[string]ClientInfo {
-	return states.Copy()
+	return defaultManager.GetStates()
 }
 
-// GetState returns the state of a specific MCP client
+// GetStates returns the current state of all MCP clients.
+func (m *Manager) GetStates() map[string]ClientInfo {
+	return m.states.Copy()
+}
+
+// GetState returns the state of a specific MCP client from the default manager.
 func GetState(name string) (ClientInfo, bool) {
-	return states.Get(name)
+	return defaultManager.GetState(name)
+}
+
+// GetState returns the state of a specific MCP client.
+func (m *Manager) GetState(name string) (ClientInfo, bool) {
+	return m.states.Get(name)
+}
+
+// Close closes all MCP clients in the default manager. This should be called during application shutdown.
+func Close(ctx context.Context) error {
+	return defaultManager.Close(ctx)
 }
 
 // Close closes all MCP clients. This should be called during application shutdown.
-func Close(ctx context.Context) error {
+func (m *Manager) Close(ctx context.Context) error {
 	var wg sync.WaitGroup
-	for name, session := range sessions.Seq2() {
+	for name, session := range m.sessions.Seq2() {
 		wg.Go(func() {
 			done := make(chan error, 1)
 			go func() {
@@ -158,25 +210,30 @@ func Close(ctx context.Context) error {
 		})
 	}
 	wg.Wait()
-	broker.Shutdown()
+	m.broker.Shutdown()
 	return nil
 }
 
-// Initialize initializes MCP clients based on the provided configuration.
+// Initialize initializes MCP clients in the default manager based on the provided configuration.
 func Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore) {
+	defaultManager.Initialize(ctx, permissions, cfg)
+}
+
+// Initialize initializes MCP clients based on the provided configuration.
+func (m *Manager) Initialize(ctx context.Context, permissions permission.Service, cfg *config.ConfigStore) {
 	slog.Info("Initializing MCP clients")
 	var wg sync.WaitGroup
 	// Initialize states for all configured MCPs
-	for name, m := range cfg.Config().MCP {
-		if m.Disabled {
-			updateState(name, StateDisabled, nil, nil, Counts{})
+	for name, mcpCfg := range cfg.Config().MCP {
+		if mcpCfg.Disabled {
+			m.updateState(name, StateDisabled, nil, nil, Counts{})
 			slog.Debug("Skipping disabled MCP", "name", name)
 			continue
 		}
 
 		// Set initial starting state
 		wg.Add(1)
-		go func(name string, m config.MCPConfig) {
+		go func(name string, mcpCfg config.MCPConfig) {
 			defer func() {
 				wg.Done()
 				if r := recover(); r != nil {
@@ -189,54 +246,65 @@ func Initialize(ctx context.Context, permissions permission.Service, cfg *config
 					default:
 						err = fmt.Errorf("panic: %v", v)
 					}
-					updateState(name, StateError, err, nil, Counts{})
+					m.updateState(name, StateError, err, nil, Counts{})
 					slog.Error("Panic in MCP client initialization", "error", err, "name", name)
 				}
 			}()
 
-			if err := initClient(ctx, cfg, name, m, cfg.Resolver()); err != nil {
+			if err := m.initClient(ctx, cfg, name, mcpCfg, cfg.Resolver()); err != nil {
 				slog.Debug("Failed to initialize MCP client", "name", name, "error", err)
 			}
-		}(name, m)
+		}(name, mcpCfg)
 	}
 	wg.Wait()
-	initOnce.Do(func() { close(initDone) })
+	m.initOnce.Do(func() { close(m.initDone) })
+}
+
+// WaitForInit blocks until MCP initialization is complete in the default manager.
+// If Initialize was never called, this blocks until the context is cancelled.
+func WaitForInit(ctx context.Context) error {
+	return defaultManager.WaitForInit(ctx)
 }
 
 // WaitForInit blocks until MCP initialization is complete.
-// If Initialize was never called, this returns immediately.
-func WaitForInit(ctx context.Context) error {
+// If Initialize was never called, this blocks until the context is cancelled.
+func (m *Manager) WaitForInit(ctx context.Context) error {
 	select {
-	case <-initDone:
+	case <-m.initDone:
 		return nil
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-// InitializeSingle initializes a single MCP client by name.
+// InitializeSingle initializes a single MCP client by name in the default manager.
 func InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
-	m, exists := cfg.Config().MCP[name]
+	return defaultManager.InitializeSingle(ctx, name, cfg)
+}
+
+// InitializeSingle initializes a single MCP client by name.
+func (m *Manager) InitializeSingle(ctx context.Context, name string, cfg *config.ConfigStore) error {
+	mcpCfg, exists := cfg.Config().MCP[name]
 	if !exists {
 		return fmt.Errorf("mcp '%s' not found in configuration", name)
 	}
 
-	if m.Disabled {
-		updateState(name, StateDisabled, nil, nil, Counts{})
+	if mcpCfg.Disabled {
+		m.updateState(name, StateDisabled, nil, nil, Counts{})
 		slog.Debug("Skipping disabled MCP", "name", name)
 		return nil
 	}
 
-	return initClient(ctx, cfg, name, m, cfg.Resolver())
+	return m.initClient(ctx, cfg, name, mcpCfg, cfg.Resolver())
 }
 
 // initClient initializes a single MCP client with the given configuration.
-func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m config.MCPConfig, resolver config.VariableResolver) error {
+func (m *Manager) initClient(ctx context.Context, cfg *config.ConfigStore, name string, mcpCfg config.MCPConfig, resolver config.VariableResolver) error {
 	// Set initial starting state.
-	updateState(name, StateStarting, nil, nil, Counts{})
+	m.updateState(name, StateStarting, nil, nil, Counts{})
 
 	// createSession handles its own timeout internally.
-	session, err := createSession(ctx, name, m, resolver)
+	session, err := m.createSession(ctx, name, mcpCfg, resolver)
 	if err != nil {
 		return err
 	}
@@ -244,7 +312,7 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 	tools, err := getTools(ctx, session)
 	if err != nil {
 		slog.Error("Error listing tools", "error", err)
-		updateState(name, StateError, err, nil, Counts{})
+		m.updateState(name, StateError, err, nil, Counts{})
 		session.Close()
 		return err
 	}
@@ -252,16 +320,16 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 	prompts, err := getPrompts(ctx, session)
 	if err != nil {
 		slog.Error("Error listing prompts", "error", err)
-		updateState(name, StateError, err, nil, Counts{})
+		m.updateState(name, StateError, err, nil, Counts{})
 		session.Close()
 		return err
 	}
 
-	toolCount := updateTools(cfg, name, tools)
-	updatePrompts(name, prompts)
-	sessions.Set(name, session)
+	toolCount := m.updateTools(cfg, name, tools)
+	m.updatePrompts(name, prompts)
+	m.sessions.Set(name, session)
 
-	updateState(name, StateConnected, nil, session, Counts{
+	m.updateState(name, StateConnected, nil, session, Counts{
 		Tools:   toolCount,
 		Prompts: len(prompts),
 	})
@@ -269,9 +337,14 @@ func initClient(ctx context.Context, cfg *config.ConfigStore, name string, m con
 	return nil
 }
 
-// DisableSingle disables and closes a single MCP client by name.
+// DisableSingle disables and closes a single MCP client by name in the default manager.
 func DisableSingle(cfg *config.ConfigStore, name string) error {
-	session, ok := sessions.Get(name)
+	return defaultManager.DisableSingle(cfg, name)
+}
+
+// DisableSingle disables and closes a single MCP client by name.
+func (m *Manager) DisableSingle(cfg *config.ConfigStore, name string) error {
+	session, ok := m.sessions.Get(name)
 	if ok {
 		if err := session.Close(); err != nil &&
 			!errors.Is(err, io.EOF) &&
@@ -279,50 +352,50 @@ func DisableSingle(cfg *config.ConfigStore, name string) error {
 			err.Error() != "signal: killed" {
 			slog.Warn("Error closing MCP session", "name", name, "error", err)
 		}
-		sessions.Del(name)
+		m.sessions.Del(name)
 	}
 
 	// Clear tools and prompts for this MCP.
-	updateTools(cfg, name, nil)
-	updatePrompts(name, nil)
+	m.updateTools(cfg, name, nil)
+	m.updatePrompts(name, nil)
 
 	// Update state to disabled.
-	updateState(name, StateDisabled, nil, nil, Counts{})
+	m.updateState(name, StateDisabled, nil, nil, Counts{})
 
 	slog.Info("Disabled mcp client", "name", name)
 	return nil
 }
 
-func getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*ClientSession, error) {
-	sess, ok := sessions.Get(name)
+func (m *Manager) getOrRenewClient(ctx context.Context, cfg *config.ConfigStore, name string) (*ClientSession, error) {
+	sess, ok := m.sessions.Get(name)
 	if !ok {
 		return nil, fmt.Errorf("mcp '%s' not available", name)
 	}
 
-	m := cfg.Config().MCP[name]
-	state, _ := states.Get(name)
+	mcpCfg := cfg.Config().MCP[name]
+	state, _ := m.states.Get(name)
 
-	timeout := mcpTimeout(m)
+	timeout := mcpTimeout(mcpCfg)
 	pingCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	err := sess.Ping(pingCtx, nil)
 	if err == nil {
 		return sess, nil
 	}
-	updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, state.Counts)
+	m.updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, state.Counts)
 
-	sess, err = createSession(ctx, name, m, cfg.Resolver())
+	sess, err = m.createSession(ctx, name, mcpCfg, cfg.Resolver())
 	if err != nil {
 		return nil, err
 	}
 
-	updateState(name, StateConnected, nil, sess, state.Counts)
-	sessions.Set(name, sess)
+	m.updateState(name, StateConnected, nil, sess, state.Counts)
+	m.sessions.Set(name, sess)
 	return sess, nil
 }
 
-// updateState updates the state of an MCP client and publishes an event
-func updateState(name string, state State, err error, client *ClientSession, counts Counts) {
+// updateState updates the state of an MCP client and publishes an event.
+func (m *Manager) updateState(name string, state State, err error, client *ClientSession, counts Counts) {
 	info := ClientInfo{
 		Name:   name,
 		State:  state,
@@ -334,12 +407,12 @@ func updateState(name string, state State, err error, client *ClientSession, cou
 	case StateConnected:
 		info.ConnectedAt = time.Now()
 	case StateError:
-		sessions.Del(name)
+		m.sessions.Del(name)
 	}
-	states.Set(name, info)
+	m.states.Set(name, info)
 
 	// Publish state change event
-	broker.Publish(pubsub.UpdatedEvent, Event{
+	m.broker.Publish(pubsub.UpdatedEvent, Event{
 		Type:   EventStateChanged,
 		Name:   name,
 		State:  state,
@@ -348,14 +421,14 @@ func updateState(name string, state State, err error, client *ClientSession, cou
 	})
 }
 
-func createSession(ctx context.Context, name string, m config.MCPConfig, resolver config.VariableResolver) (*ClientSession, error) {
-	timeout := mcpTimeout(m)
+func (m *Manager) createSession(ctx context.Context, name string, mcpCfg config.MCPConfig, resolver config.VariableResolver) (*ClientSession, error) {
+	timeout := mcpTimeout(mcpCfg)
 	mcpCtx, cancel := context.WithCancel(ctx)
 	cancelTimer := time.AfterFunc(timeout, cancel)
 
-	transport, err := createTransport(mcpCtx, m, resolver)
+	transport, err := createTransport(mcpCtx, mcpCfg, resolver)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		m.updateState(name, StateError, err, nil, Counts{})
 		slog.Error("Error creating MCP client", "error", err, "name", name)
 		cancel()
 		cancelTimer.Stop()
@@ -370,19 +443,19 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 		},
 		&mcp.ClientOptions{
 			ToolListChangedHandler: func(context.Context, *mcp.ToolListChangedRequest) {
-				broker.Publish(pubsub.UpdatedEvent, Event{
+				m.broker.Publish(pubsub.UpdatedEvent, Event{
 					Type: EventToolsListChanged,
 					Name: name,
 				})
 			},
 			PromptListChangedHandler: func(context.Context, *mcp.PromptListChangedRequest) {
-				broker.Publish(pubsub.UpdatedEvent, Event{
+				m.broker.Publish(pubsub.UpdatedEvent, Event{
 					Type: EventPromptsListChanged,
 					Name: name,
 				})
 			},
 			ResourceListChangedHandler: func(context.Context, *mcp.ResourceListChangedRequest) {
-				broker.Publish(pubsub.UpdatedEvent, Event{
+				m.broker.Publish(pubsub.UpdatedEvent, Event{
 					Type: EventResourcesListChanged,
 					Name: name,
 				})
@@ -397,7 +470,7 @@ func createSession(ctx context.Context, name string, m config.MCPConfig, resolve
 	session, err := client.Connect(mcpCtx, transport, nil)
 	if err != nil {
 		err = maybeStdioErr(err, transport)
-		updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, Counts{})
+		m.updateState(name, StateError, maybeTimeoutErr(err, timeout), nil, Counts{})
 		slog.Error("MCP client failed to initialize", "error", err, "name", name)
 		cancel()
 		cancelTimer.Stop()

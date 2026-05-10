@@ -28,15 +28,33 @@ func NewCrushInfoTool(
 	activeSkills []*skills.Skill,
 	skillTracker *skills.Tracker,
 ) fantasy.AgentTool {
+	return NewCrushInfoToolWithMCPManager(cfg, lspManager, allSkills, activeSkills, skillTracker, mcp.DefaultManager())
+}
+
+func NewCrushInfoToolWithMCPManager(
+	cfg *config.ConfigStore,
+	lspManager *lsp.Manager,
+	allSkills []*skills.Skill,
+	activeSkills []*skills.Skill,
+	skillTracker *skills.Tracker,
+	mcpManager *mcp.Manager,
+) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		CrushInfoToolName,
 		string(crushInfoDescription),
 		func(ctx context.Context, _ CrushInfoParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
-			return fantasy.NewTextResponse(buildCrushInfo(cfg, lspManager, allSkills, activeSkills, skillTracker)), nil
+			return fantasy.NewTextResponse(buildCrushInfoWithMCPManager(cfg, lspManager, allSkills, activeSkills, skillTracker, mcpManager)), nil
 		})
 }
 
 func buildCrushInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker) string {
+	return buildCrushInfoWithMCPManager(cfg, lspManager, allSkills, activeSkills, skillTracker, mcp.DefaultManager())
+}
+
+func buildCrushInfoWithMCPManager(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker, mcpManager *mcp.Manager) string {
+	if mcpManager == nil {
+		mcpManager = mcp.DefaultManager()
+	}
 	var b strings.Builder
 
 	writeConfigFiles(&b, cfg)
@@ -44,7 +62,7 @@ func buildCrushInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills 
 	writeModels(&b, cfg)
 	writeProviders(&b, cfg)
 	writeLSP(&b, lspManager, cfg)
-	writeMCP(&b, mcp.GetStates(), cfg)
+	writeMCP(&b, mcpManager.GetStates(), cfg)
 	writeSkills(&b, allSkills, activeSkills, skillTracker, cfg)
 	writeHooks(&b, cfg)
 	writePermissions(&b, cfg)

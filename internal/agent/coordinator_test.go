@@ -2,8 +2,13 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"testing"
+	"time"
 
 	"charm.land/catwalk/pkg/catwalk"
 	"charm.land/fantasy"
@@ -75,6 +80,126 @@ func agentResultWithText(text string) *fantasy.AgentResult {
 			},
 		},
 	}
+}
+
+func TestBuildAnthropicProviderBearerAuthDoesNotMutateOrLeakProcessEnv(t *testing.T) {
+	restoreAgentEnvVar(t, "ANTHROPIC_API_KEY")
+	require.NoError(t, os.Setenv("ANTHROPIC_API_KEY", "host-anthropic-key"))
+
+	for _, tt := range []struct {
+		name       string
+		providerID string
+		apiKey     string
+		wantAuth   string
+	}{
+		{
+			name:       "bearer token",
+			providerID: string(catwalk.InferenceProviderAnthropic),
+			apiKey:     "Bearer loop-token",
+			wantAuth:   "Bearer loop-token",
+		},
+		{
+			name:       "minimax bearer token",
+			providerID: string(catwalk.InferenceProviderMiniMax),
+			apiKey:     "minimax-token",
+			wantAuth:   "Bearer minimax-token",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			server, requests := newAnthropicHeaderServer(t)
+			defer server.Close()
+
+			coord := &coordinator{cfg: config.NewTestStore(&config.Config{Options: &config.Options{}})}
+			provider, err := coord.buildAnthropicProvider(server.URL, tt.apiKey, map[string]string{}, tt.providerID)
+			require.NoError(t, err)
+			require.Equal(t, "host-anthropic-key", os.Getenv("ANTHROPIC_API_KEY"))
+
+			model, err := provider.LanguageModel(t.Context(), "claude-sonnet-4-20250514")
+			require.NoError(t, err)
+			_, err = model.Generate(t.Context(), fantasy.Call{Prompt: testAnthropicPrompt()})
+			require.NoError(t, err)
+
+			req := awaitAnthropicHeaderRequest(t, requests)
+			require.Equal(t, tt.wantAuth, req.authorization)
+			require.NotEqual(t, "host-anthropic-key", req.xAPIKey, "host ANTHROPIC_API_KEY must not leak into bearer-auth requests")
+			require.Empty(t, req.xAPIKey)
+			require.Equal(t, "host-anthropic-key", os.Getenv("ANTHROPIC_API_KEY"))
+		})
+	}
+}
+
+type anthropicHeaderRequest struct {
+	authorization string
+	xAPIKey       string
+}
+
+func newAnthropicHeaderServer(t *testing.T) (*httptest.Server, <-chan anthropicHeaderRequest) {
+	t.Helper()
+	requests := make(chan anthropicHeaderRequest, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests <- anthropicHeaderRequest{
+			authorization: r.Header.Get("Authorization"),
+			xAPIKey:       r.Header.Get("X-Api-Key"),
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"id":    "msg_test",
+			"type":  "message",
+			"role":  "assistant",
+			"model": "claude-sonnet-4-20250514",
+			"content": []any{
+				map[string]any{
+					"type": "text",
+					"text": "ok",
+				},
+			},
+			"stop_reason":   "end_turn",
+			"stop_sequence": "",
+			"usage": map[string]any{
+				"input_tokens":                1,
+				"output_tokens":               1,
+				"cache_creation_input_tokens": 0,
+				"cache_read_input_tokens":     0,
+				"cache_creation":              map[string]any{},
+				"server_tool_use":             map[string]any{},
+			},
+		})
+	}))
+	return server, requests
+}
+
+func awaitAnthropicHeaderRequest(t *testing.T, requests <-chan anthropicHeaderRequest) anthropicHeaderRequest {
+	t.Helper()
+	select {
+	case req := <-requests:
+		return req
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for Anthropic request")
+		return anthropicHeaderRequest{}
+	}
+}
+
+func testAnthropicPrompt() fantasy.Prompt {
+	return fantasy.Prompt{
+		{
+			Role: fantasy.MessageRoleUser,
+			Content: []fantasy.MessagePart{
+				fantasy.TextPart{Text: "Hello"},
+			},
+		},
+	}
+}
+
+func restoreAgentEnvVar(t *testing.T, key string) {
+	t.Helper()
+	old, ok := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, old)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 func TestRunSubAgent(t *testing.T) {

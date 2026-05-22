@@ -1,10 +1,12 @@
 package config
 
 import (
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"charm.land/catwalk/pkg/catwalk"
@@ -85,6 +87,82 @@ func TestConfig_configureProviders(t *testing.T) {
 	// We want to make sure that we keep the configured API key as a placeholder
 	pc, _ := cfg.Providers.Get("openai")
 	require.Equal(t, "$OPENAI_API_KEY", pc.APIKey)
+}
+
+func TestConfig_configureProvidersWithCrushEnvAliasDoesNotMutateProcessEnv(t *testing.T) {
+	restoreEnvVar(t, "OPENAI_API_KEY")
+	restoreEnvVar(t, "CRUSH_OPENAI_API_KEY")
+	require.NoError(t, os.Unsetenv("OPENAI_API_KEY"))
+	require.NoError(t, os.Setenv("CRUSH_OPENAI_API_KEY", "crush-key"))
+
+	knownProviders := []catwalk.Provider{
+		{
+			ID:          "openai",
+			APIKey:      "$OPENAI_API_KEY",
+			APIEndpoint: "https://api.openai.com/v1",
+			Models: []catwalk.Model{{
+				ID: "test-model",
+			}},
+		},
+	}
+
+	cfg := &Config{}
+	cfg.setDefaults("/tmp", "")
+	processEnv := withCrushEnvAliases(env.New())
+	resolver := NewShellVariableResolver(processEnv)
+
+	err := cfg.configureProviders(testStore(cfg), processEnv, resolver, knownProviders)
+	require.NoError(t, err)
+	require.Equal(t, 1, cfg.Providers.Len())
+
+	_, ok := os.LookupEnv("OPENAI_API_KEY")
+	require.False(t, ok, "CRUSH_* aliases must not be copied into the process environment")
+}
+
+func TestCrushEnvAliasesResolvePerEnvConcurrently(t *testing.T) {
+	t.Parallel()
+
+	const workers = 16
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+
+	for i := range workers {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			want := fmt.Sprintf("crush-key-%d", i)
+			testEnv := withCrushEnvAliases(env.NewFromMap(map[string]string{
+				"OPENAI_API_KEY":       "host-key",
+				"CRUSH_OPENAI_API_KEY": want,
+			}))
+			got, err := NewShellVariableResolver(testEnv).ResolveValue("$OPENAI_API_KEY")
+			if err != nil {
+				errs <- err
+				return
+			}
+			if got != want {
+				errs <- fmt.Errorf("worker %d resolved %q, want %q", i, got, want)
+			}
+		}(i)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+func restoreEnvVar(t *testing.T, key string) {
+	t.Helper()
+	old, ok := os.LookupEnv(key)
+	t.Cleanup(func() {
+		if ok {
+			_ = os.Setenv(key, old)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 func TestConfig_configureProvidersWithOverride(t *testing.T) {

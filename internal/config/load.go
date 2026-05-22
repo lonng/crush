@@ -94,9 +94,9 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	}
 	store.knownProviders = providers
 
-	env := env.New()
+	processEnv := withCrushEnvAliases(env.New())
 	// Configure providers
-	valueResolver := NewShellVariableResolver(env)
+	valueResolver := NewShellVariableResolver(processEnv)
 	store.resolver = valueResolver
 
 	// Disable auto-reload during initial load to prevent nested calls from
@@ -104,7 +104,7 @@ func Load(workingDir, dataDir string, debug bool) (*ConfigStore, error) {
 	store.autoReloadDisabled = true
 	defer func() { store.autoReloadDisabled = false }()
 
-	if err := cfg.configureProviders(store, env, valueResolver, store.knownProviders); err != nil {
+	if err := cfg.configureProviders(store, processEnv, valueResolver, store.knownProviders); err != nil {
 		return nil, fmt.Errorf("failed to configure providers: %w", err)
 	}
 
@@ -134,38 +134,8 @@ func mustMarshalConfig(cfg *Config) []byte {
 	return data
 }
 
-func PushPopCrushEnv() func() {
-	var found []string
-	for _, ev := range os.Environ() {
-		if strings.HasPrefix(ev, "CRUSH_") {
-			pair := strings.SplitN(ev, "=", 2)
-			if len(pair) != 2 {
-				continue
-			}
-			found = append(found, strings.TrimPrefix(pair[0], "CRUSH_"))
-		}
-	}
-	backups := make(map[string]string)
-	for _, ev := range found {
-		backups[ev] = os.Getenv(ev)
-	}
-
-	for _, ev := range found {
-		os.Setenv(ev, os.Getenv("CRUSH_"+ev))
-	}
-
-	restore := func() {
-		for k, v := range backups {
-			os.Setenv(k, v)
-		}
-	}
-	return restore
-}
-
 func (c *Config) configureProviders(store *ConfigStore, env env.Env, resolver VariableResolver, knownProviders []catwalk.Provider) error {
 	knownProviderNames := make(map[string]bool)
-	restore := PushPopCrushEnv()
-	defer restore()
 
 	// When disable_default_providers is enabled, skip all default/embedded
 	// providers entirely. Users must fully specify any providers they want.
@@ -472,17 +442,27 @@ func (c *Config) setDefaults(workingDir, dataDir string) {
 		c.Options.Attribution = &Attribution{
 			TrailerStyle:  TrailerStyleAssistedBy,
 			GeneratedWith: true,
+			ProductName:   "Crush",
+			ContactEmail:  "crush@charm.land",
 		}
-	} else if c.Options.Attribution.TrailerStyle == "" {
-		// Migrate deprecated co_authored_by or apply default
-		if c.Options.Attribution.CoAuthoredBy != nil {
-			if *c.Options.Attribution.CoAuthoredBy {
-				c.Options.Attribution.TrailerStyle = TrailerStyleCoAuthoredBy
+	} else {
+		if c.Options.Attribution.TrailerStyle == "" {
+			// Migrate deprecated co_authored_by or apply default
+			if c.Options.Attribution.CoAuthoredBy != nil {
+				if *c.Options.Attribution.CoAuthoredBy {
+					c.Options.Attribution.TrailerStyle = TrailerStyleCoAuthoredBy
+				} else {
+					c.Options.Attribution.TrailerStyle = TrailerStyleNone
+				}
 			} else {
-				c.Options.Attribution.TrailerStyle = TrailerStyleNone
+				c.Options.Attribution.TrailerStyle = TrailerStyleAssistedBy
 			}
-		} else {
-			c.Options.Attribution.TrailerStyle = TrailerStyleAssistedBy
+		}
+		if c.Options.Attribution.ProductName == "" {
+			c.Options.Attribution.ProductName = "Crush"
+		}
+		if c.Options.Attribution.ContactEmail == "" {
+			c.Options.Attribution.ContactEmail = "crush@charm.land"
 		}
 	}
 	c.Options.InitializeAs = cmp.Or(c.Options.InitializeAs, defaultInitializeAs)

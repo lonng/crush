@@ -646,15 +646,22 @@ func (c *coordinator) buildAgentModels(ctx context.Context, isSubAgent bool) (Mo
 
 func (c *coordinator) buildAnthropicProvider(baseURL, apiKey string, headers map[string]string, providerID string) (fantasy.Provider, error) {
 	var opts []anthropic.Option
+	if headers == nil {
+		headers = map[string]string{}
+	}
 
 	switch {
 	case strings.HasPrefix(apiKey, "Bearer "):
-		// NOTE: Prevent the SDK from picking up the API key from env.
-		os.Setenv("ANTHROPIC_API_KEY", "")
+		// The Anthropic SDK reads ANTHROPIC_API_KEY from the process env by default.
+		// When a provider uses bearer auth, suppress that process-level fallback via
+		// request headers instead of mutating os.Environ, which is unsafe for
+		// in-process hosts running multiple Crush instances concurrently.
+		headers["X-Api-Key"] = ""
 		headers["Authorization"] = apiKey
 	case providerID == string(catwalk.InferenceProviderMiniMax) || providerID == string(catwalk.InferenceProviderMiniMaxChina):
-		// NOTE: Prevent the SDK from picking up the API key from env.
-		os.Setenv("ANTHROPIC_API_KEY", "")
+		// MiniMax uses bearer auth through the Anthropic-compatible provider path;
+		// avoid leaking ANTHROPIC_API_KEY from the host process into its requests.
+		headers["X-Api-Key"] = ""
 		headers["Authorization"] = "Bearer " + apiKey
 	case apiKey != "":
 		// X-Api-Key header

@@ -436,6 +436,12 @@ func writeAttribution(b *strings.Builder, cfg *config.ConfigStore) {
 	}
 	fmt.Fprintf(b, "trailer_style = %s\n", trailerStyle)
 	fmt.Fprintf(b, "generated_with = %v\n", c.Options.Attribution.GeneratedWith)
+	if c.Options.Attribution.ProductName != "" {
+		fmt.Fprintf(b, "product_name = %s\n", c.Options.Attribution.ProductName)
+	}
+	if c.Options.Attribution.ContactEmail != "" {
+		fmt.Fprintf(b, "contact_email = %s\n", c.Options.Attribution.ContactEmail)
+	}
 	b.WriteString("\n")
 }
 

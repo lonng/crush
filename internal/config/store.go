@@ -672,14 +672,14 @@ func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
 	overrides := s.overrides
 
 	// Reconfigure providers
-	env := env.New()
-	resolver := NewShellVariableResolver(env)
+	processEnv := withCrushEnvAliases(env.New())
+	resolver := NewShellVariableResolver(processEnv)
 	providers, err := Providers(cfg)
 	if err != nil {
 		return fmt.Errorf("failed to load providers during reload: %w", err)
 	}
 
-	if err := cfg.configureProviders(s, env, resolver, providers); err != nil {
+	if err := cfg.configureProviders(s, processEnv, resolver, providers); err != nil {
 		return fmt.Errorf("failed to configure providers during reload: %w", err)
 	}
 

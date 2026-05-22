@@ -529,6 +529,16 @@ func createTransport(ctx context.Context, m config.MCPConfig, resolver config.Va
 			return nil, err
 		}
 		cmd := exec.CommandContext(ctx, home.Long(command), args...)
+		if cwd := strings.TrimSpace(m.CWD); cwd != "" {
+			resolvedCWD, err := resolver.ResolveValue(cwd)
+			if err != nil {
+				return nil, fmt.Errorf("cwd: %w", err)
+			}
+			resolvedCWD = strings.TrimSpace(resolvedCWD)
+			if resolvedCWD != "" {
+				cmd.Dir = home.Long(resolvedCWD)
+			}
+		}
 		cmd.Env = append(os.Environ(), envs...)
 		return &mcp.CommandTransport{
 			Command: cmd,

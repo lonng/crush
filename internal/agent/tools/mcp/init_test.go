@@ -177,15 +177,18 @@ func TestCreateTransport_URLResolution(t *testing.T) {
 func TestCreateTransport_StdioResolution(t *testing.T) {
 	t.Parallel()
 
-	t.Run("success expands command, args, and env", func(t *testing.T) {
+	t.Run("success expands command, args, env, and cwd", func(t *testing.T) {
 		t.Parallel()
+		tmpDir := t.TempDir()
 		r := shellResolverWithPath(t, map[string]string{
 			"MY_TOKEN": "hunter2",
+			"MCP_CWD":  tmpDir,
 		})
 		m := config.MCPConfig{
 			Type:    config.MCPStdio,
 			Command: "forgejo-mcp",
 			Args:    []string{"--token", "$MY_TOKEN", "--host", "$(echo example.com)"},
+			CWD:     "$MCP_CWD",
 			Env: map[string]string{
 				"SECRET":    "$(echo shh)",
 				"PLAIN":     "literal",
@@ -208,6 +211,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 		require.Contains(t, ct.Command.Env, "SECRET=shh")
 		require.Contains(t, ct.Command.Env, "PLAIN=literal")
 		require.Contains(t, ct.Command.Env, "REFERENCE=hunter2")
+		require.Equal(t, tmpDir, ct.Command.Dir)
 	})
 
 	t.Run("env resolution failure surfaces error, no transport created", func(t *testing.T) {
@@ -292,6 +296,20 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 		require.Contains(t, err.Error(), "invalid mcp command")
 	})
 
+	t.Run("cwd resolution failure surfaces error, no transport created", func(t *testing.T) {
+		t.Parallel()
+		r := shellResolverWithPath(t, nil)
+		m := config.MCPConfig{
+			Type:    config.MCPStdio,
+			Command: "forgejo-mcp",
+			CWD:     "$(false)",
+		}
+		tr, err := createTransport(t.Context(), m, r)
+		require.Error(t, err)
+		require.Nil(t, tr)
+		require.Contains(t, err.Error(), "cwd:")
+	})
+
 	t.Run("identity resolver round-trips templates verbatim", func(t *testing.T) {
 		t.Parallel()
 		// Client mode: no local expansion, no error on unset vars.
@@ -299,6 +317,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 			Type:    config.MCPStdio,
 			Command: "forgejo-mcp",
 			Args:    []string{"--token", "$MCP_MISSING"},
+			CWD:     "$MCP_WORKDIR",
 			Env:     map[string]string{"TOKEN": "$(vault read -f token)"},
 		}
 		tr, err := createTransport(t.Context(), m, config.IdentityResolver())
@@ -306,6 +325,7 @@ func TestCreateTransport_StdioResolution(t *testing.T) {
 		ct, ok := tr.(*mcp.CommandTransport)
 		require.True(t, ok)
 		require.Equal(t, []string{"forgejo-mcp", "--token", "$MCP_MISSING"}, ct.Command.Args)
+		require.Equal(t, "$MCP_WORKDIR", ct.Command.Dir)
 		require.Contains(t, ct.Command.Env, "TOKEN=$(vault read -f token)")
 	})
 }

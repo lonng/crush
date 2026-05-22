@@ -12,9 +12,8 @@ func TestNewAppUsesEmbeddedConfigWithoutWritingWorkingDirConfig(t *testing.T) {
 	defer cancel()
 
 	workingDir := t.TempDir()
-	dataDir := filepath.Join(t.TempDir(), "data")
 
-	app, err := NewApp(ctx, workingDir, "loop-agent", "", WithDataDir(dataDir))
+	app, err := NewApp(ctx, workingDir, "loop-agent", "")
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
 	}
@@ -23,14 +22,11 @@ func TestNewAppUsesEmbeddedConfigWithoutWritingWorkingDirConfig(t *testing.T) {
 	if got := app.ID(); got != "loop-agent" {
 		t.Fatalf("app ID = %q, want loop-agent", got)
 	}
-	if got := app.Config().Options.DataDirectory; got != dataDir {
-		t.Fatalf("data directory = %q, want %q", got, dataDir)
+	if _, err := os.Stat(filepath.Join(workingDir, "loop.json")); !os.IsNotExist(err) {
+		t.Fatalf("NewApp wrote workingDir/loop.json, stat err=%v", err)
 	}
-	if _, err := os.Stat(filepath.Join(workingDir, "crush.json")); !os.IsNotExist(err) {
-		t.Fatalf("NewApp wrote workingDir/crush.json, stat err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(workingDir, ".crush", "crush.json")); !os.IsNotExist(err) {
-		t.Fatalf("NewApp wrote workingDir/.crush/crush.json, stat err=%v", err)
+	if _, err := os.Stat(filepath.Join(workingDir, ".loop", "loop.json")); !os.IsNotExist(err) {
+		t.Fatalf("NewApp wrote workingDir/.loop/loop.json, stat err=%v", err)
 	}
 }
 
@@ -39,9 +35,8 @@ func TestCurrentSessionIDTracksCreatedAndResumedSessions(t *testing.T) {
 	defer cancel()
 
 	workingDir := t.TempDir()
-	dataDir := filepath.Join(t.TempDir(), "data")
 
-	app, err := NewApp(ctx, workingDir, "loop-agent", "", WithDataDir(dataDir))
+	app, err := NewApp(ctx, workingDir, "loop-agent", "")
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
 	}
@@ -54,7 +49,7 @@ func TestCurrentSessionIDTracksCreatedAndResumedSessions(t *testing.T) {
 	}
 	app.Shutdown()
 
-	resumed, err := NewApp(ctx, workingDir, "loop-agent", sess.ID, WithDataDir(dataDir))
+	resumed, err := NewApp(ctx, workingDir, "loop-agent", sess.ID)
 	if err != nil {
 		t.Fatalf("NewApp for resume returned error: %v", err)
 	}
@@ -76,7 +71,7 @@ func TestSubscribeSessionsReturnsExportedEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	app, err := NewApp(ctx, t.TempDir(), "loop-agent", "", WithDataDir(filepath.Join(t.TempDir(), "data")))
+	app, err := NewApp(ctx, t.TempDir(), "loop-agent", "")
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
 	}

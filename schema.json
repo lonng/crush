@@ -22,8 +22,18 @@
         },
         "generated_with": {
           "type": "boolean",
-          "description": "Add Generated with Crush line to commit messages and issues and PRs",
+          "description": "Add Generated with product line to commit messages and issues and PRs",
           "default": true
+        },
+        "product_name": {
+          "type": "string",
+          "description": "Product name used in attribution trailers",
+          "default": "Crush"
+        },
+        "contact_email": {
+          "type": "string",
+          "description": "Contact email used in attribution trailers",
+          "default": "crush@charm.land"
         }
       },
       "additionalProperties": false,

@@ -19,7 +19,7 @@ import (
 	"github.com/invopop/jsonschema"
 )
 
-const (
+var (
 	appName              = "crush"
 	defaultDataDirectory = ".crush"
 	defaultInitializeAs  = "AGENTS.md"
@@ -42,6 +42,26 @@ var defaultContextPaths = []string{
 	"AGENTS.md",
 	"agents.md",
 	"Agents.md",
+}
+
+// SetAppName sets the application name used for config file paths, data directories, and cache locations.
+func SetAppName(name string) {
+	appName = name
+}
+
+// SetDefaultDataDirectory sets the default data directory name (relative to the working directory).
+func SetDefaultDataDirectory(dir string) {
+	defaultDataDirectory = dir
+}
+
+// SetDefaultInitializeAs sets the default context file name created during project initialization.
+func SetDefaultInitializeAs(name string) {
+	defaultInitializeAs = name
+}
+
+// SetDefaultContextPaths sets the default file paths to look for when loading agent context.
+func SetDefaultContextPaths(paths []string) {
+	defaultContextPaths = paths
 }
 
 type SelectedModelType string
@@ -184,6 +204,7 @@ type MCPConfig struct {
 	Command       string            `json:"command,omitempty" jsonschema:"description=Command to execute for stdio MCP servers,example=npx"`
 	Env           map[string]string `json:"env,omitempty" jsonschema:"description=Environment variables to set for the MCP server"`
 	Args          []string          `json:"args,omitempty" jsonschema:"description=Arguments to pass to the MCP server command"`
+	CWD           string            `json:"cwd,omitempty" jsonschema:"description=Working directory for stdio MCP server commands,example=/path/to/project"`
 	Type          MCPType           `json:"type" jsonschema:"required,description=Type of MCP connection,enum=stdio,enum=sse,enum=http,default=stdio"`
 	URL           string            `json:"url,omitempty" jsonschema:"description=URL for HTTP or SSE MCP servers,format=uri,example=http://localhost:3000/mcp"`
 	Disabled      bool              `json:"disabled,omitempty" jsonschema:"description=Whether this MCP server is disabled,default=false"`
@@ -246,7 +267,9 @@ const (
 type Attribution struct {
 	TrailerStyle  TrailerStyle `json:"trailer_style,omitempty" jsonschema:"description=Style of attribution trailer to add to commits,enum=none,enum=co-authored-by,enum=assisted-by,default=assisted-by"`
 	CoAuthoredBy  *bool        `json:"co_authored_by,omitempty" jsonschema:"description=Deprecated: use trailer_style instead"`
-	GeneratedWith bool         `json:"generated_with,omitempty" jsonschema:"description=Add Generated with Crush line to commit messages and issues and PRs,default=true"`
+	GeneratedWith bool         `json:"generated_with,omitempty" jsonschema:"description=Add Generated with product line to commit messages and issues and PRs,default=true"`
+	ProductName   string       `json:"product_name,omitempty" jsonschema:"description=Product name used in attribution trailers,default=Crush"`
+	ContactEmail  string       `json:"contact_email,omitempty" jsonschema:"description=Contact email used in attribution trailers,default=crush@charm.land"`
 }
 
 // JSONSchemaExtend marks the co_authored_by field as deprecated in the schema.

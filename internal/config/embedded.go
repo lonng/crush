@@ -62,14 +62,14 @@ func LoadEmbedded(cfg *Config, workingDir, dataDir string, debug bool) (*ConfigS
 	}
 	store.knownProviders = providers
 
-	env := env.New()
-	resolver := NewShellVariableResolver(env)
+	processEnv := withCrushEnvAliases(env.New())
+	resolver := NewShellVariableResolver(processEnv)
 	store.resolver = resolver
 
 	store.autoReloadDisabled = true
 	defer func() { store.autoReloadDisabled = false }()
 
-	if err := cloned.configureProviders(store, env, resolver, store.knownProviders); err != nil {
+	if err := cloned.configureProviders(store, processEnv, resolver, store.knownProviders); err != nil {
 		return nil, fmt.Errorf("failed to configure providers: %w", err)
 	}
 

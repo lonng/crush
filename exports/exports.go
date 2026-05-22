@@ -8,104 +8,13 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"sync"
 
-	"charm.land/catwalk/pkg/catwalk"
 	"github.com/charmbracelet/crush/internal/app"
 	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/charmbracelet/crush/internal/db"
-	"github.com/charmbracelet/crush/internal/log"
-	"github.com/charmbracelet/crush/internal/message"
-	"github.com/charmbracelet/crush/internal/session"
-	"github.com/charmbracelet/crush/internal/skills"
 )
 
 const defaultSchema = "https://charm.land/crush.json"
-
-// Re-exported helpers that embedded hosts commonly need.
-var (
-	SetupLog             = log.Setup
-	NewProviders         = csync.NewMap[string, ProviderConfig]
-	NewProvidersFrom     = csync.NewMapFrom[string, ProviderConfig]
-	Assistant            = message.Assistant
-	User                 = message.User
-	System               = message.System
-	Tool                 = message.Tool
-	DiscoverSkills       = skills.Discover
-	DiscoverSkillsStates = skills.DiscoverWithStates
-	ParseSkill           = skills.Parse
-	ParseSkillContent    = skills.ParseContent
-)
-
-const (
-	FinishReasonEndTurn   = message.FinishReasonEndTurn
-	FinishReasonMaxTokens = message.FinishReasonMaxTokens
-	FinishReasonToolUse   = message.FinishReasonToolUse
-	FinishReasonCanceled  = message.FinishReasonCanceled
-	FinishReasonError     = message.FinishReasonError
-	FinishReasonUnknown   = message.FinishReasonUnknown
-
-	SelectedModelTypeLarge = config.SelectedModelTypeLarge
-	SelectedModelTypeSmall = config.SelectedModelTypeSmall
-
-	MCPStdio = config.MCPStdio
-	MCPSSE   = config.MCPSSE
-	MCPHttp  = config.MCPHttp
-
-	ProviderTypeOpenAI       = catwalk.TypeOpenAI
-	ProviderTypeOpenAICompat = catwalk.TypeOpenAICompat
-	ProviderTypeOpenRouter   = catwalk.TypeOpenRouter
-	ProviderTypeVercel       = catwalk.TypeVercel
-	ProviderTypeAnthropic    = catwalk.TypeAnthropic
-	ProviderTypeGoogle       = catwalk.TypeGoogle
-	ProviderTypeAzure        = catwalk.TypeAzure
-	ProviderTypeBedrock      = catwalk.TypeBedrock
-	ProviderTypeVertexAI     = catwalk.TypeVertexAI
-)
-
-type (
-	Config            = config.Config
-	Options           = config.Options
-	TUIOptions        = config.TUIOptions
-	Completions       = config.Completions
-	Permissions       = config.Permissions
-	ProviderConfig    = config.ProviderConfig
-	Providers         = csync.Map[string, ProviderConfig]
-	Model             = catwalk.Model
-	InferenceProvider = catwalk.InferenceProvider
-	ProviderType      = catwalk.Type
-	SelectedModel     = config.SelectedModel
-	SelectedModelType = config.SelectedModelType
-
-	MCPs      = config.MCPs
-	MCPType   = config.MCPType
-	MCPConfig = config.MCPConfig
-	LSPs      = config.LSPs
-	LSPConfig = config.LSPConfig
-
-	Message               = message.Message
-	CreateMessageParams   = message.CreateMessageParams
-	MessageRole           = message.MessageRole
-	MessageService        = message.Service
-	ContentPart           = message.ContentPart
-	ContentPartReasoning  = message.ReasoningContent
-	ContentPartText       = message.TextContent
-	ContentPartImageURL   = message.ImageURLContent
-	ContentPartBinary     = message.BinaryContent
-	ContentPartToolCall   = message.ToolCall
-	ContentPartToolResult = message.ToolResult
-	ContentPartFinish     = message.Finish
-	FinishReason          = message.FinishReason
-
-	Session        = session.Session
-	SessionService = session.Service
-	Todo           = session.Todo
-	TodoStatus     = session.TodoStatus
-
-	Skill      = skills.Skill
-	SkillState = skills.SkillState
-)
 
 // EventType identifies the lifecycle event for exported message/session
 // subscriptions.
@@ -219,6 +128,38 @@ func (a *App) Shutdown() {
 	}
 }
 
+// IsSessionBusy reports whether the given session currently has an active
+// (in-progress) agent turn. The desktop driver uses this to decide whether
+// a message can be injected directly into the running turn.
+func (a *App) IsSessionBusy(sessionID string) bool {
+	if a == nil || a.internal == nil || a.internal.AgentCoordinator == nil {
+		return false
+	}
+	return a.internal.AgentCoordinator.IsSessionBusy(sessionID)
+}
+
+// QueuePrompt appends a prompt to the session's message queue. If the
+// session is currently busy (mid-turn), the prompt is consumed by the
+// agent's PrepareStep callback at the next agentic step boundary and
+// injected into the running conversation. If the session is idle, the
+// prompt is processed as a normal sequential run.
+func (a *App) QueuePrompt(ctx context.Context, sessionID, prompt string) error {
+	if a == nil || a.internal == nil || a.internal.AgentCoordinator == nil {
+		return fmt.Errorf("crush app is not initialized")
+	}
+	_, err := a.internal.AgentCoordinator.Run(ctx, sessionID, prompt)
+	return err
+}
+
+// Summarize asks the engine to generate a summary of the session history and
+// truncate older messages, freeing context space for continued conversation.
+func (a *App) Summarize(ctx context.Context, sessionID string) error {
+	if a == nil || a.internal == nil || a.internal.AgentCoordinator == nil {
+		return fmt.Errorf("crush app is not initialized")
+	}
+	return a.internal.AgentCoordinator.Summarize(ctx, sessionID)
+}
+
 // Run keeps compatibility with the Qingma embedding wrapper. It executes a
 // non-interactive run with spinner/progress hidden when quiet is true.
 func (a *App) Run(ctx context.Context, output io.Writer, prompt string, quiet bool) error {
@@ -235,12 +176,23 @@ type RunOptions struct {
 }
 
 // RunWithOptions executes Crush in non-interactive mode.
+// If ContinueSessionID references a session that does not exist in Crush's
+// store, a new session is created with that ID so the caller's reference
+// remains valid.
 func (a *App) RunWithOptions(ctx context.Context, output io.Writer, prompt string, opts RunOptions) error {
 	if a == nil || a.internal == nil {
 		return fmt.Errorf("crush app is nil")
 	}
 	if opts.ContinueSessionID != "" {
 		a.sessions.SetCurrentSessionID(opts.ContinueSessionID)
+		if _, err := a.sessions.Get(ctx, opts.ContinueSessionID); err != nil {
+			// Session does not exist yet — create it so resolveSession
+			// can find it.
+			if _, createErr := a.sessions.Create(ctx, prompt); createErr != nil {
+				// Fallback: let Crush create a fresh session.
+				opts.ContinueSessionID = ""
+			}
+		}
 	}
 	return a.internal.RunNonInteractive(
 		ctx,
@@ -259,7 +211,6 @@ type Option func(*appOptions)
 
 type appOptions struct {
 	config                 *Config
-	dataDir                string
 	debug                  bool
 	skipPermissionRequests bool
 	disableUpdateCheck     bool
@@ -270,14 +221,6 @@ type appOptions struct {
 func WithConfig(cfg *Config) Option {
 	return func(opts *appOptions) {
 		opts.config = cfg
-	}
-}
-
-// WithDataDir sets the directory for the embedded Crush database and any
-// embedded-host-local config persistence.
-func WithDataDir(dir string) Option {
-	return func(opts *appOptions) {
-		opts.dataDir = dir
 	}
 }
 
@@ -392,20 +335,19 @@ func NewConfig() *Config {
 
 // NewApp creates a new embedded Crush app.
 //
-// appDir is the project working directory. uuid is an opaque caller-supplied
+// workDir is the project working directory. uuid is an opaque caller-supplied
 // app identifier. sessionID is an optional Crush session ID to continue when
 // Run is used.
-func NewApp(ctx context.Context, appDir, uuid string, sessionID string, opts ...Option) (*App, error) {
-	if appDir == "" {
-		return nil, fmt.Errorf("appDir is required")
+func NewApp(ctx context.Context, workDir, uuid string, sessionID string, opts ...Option) (*App, error) {
+	if workDir == "" {
+		return nil, fmt.Errorf("workDir is required")
 	}
-	if abs, err := filepath.Abs(appDir); err == nil {
-		appDir = abs
+	if abs, err := filepath.Abs(workDir); err == nil {
+		workDir = abs
 	}
 
 	options := appOptions{
 		config:                 defaultEmbeddedConfig(),
-		dataDir:                filepath.Join(appDir, "data"),
 		skipPermissionRequests: true,
 		disableUpdateCheck:     true,
 	}
@@ -414,25 +356,21 @@ func NewApp(ctx context.Context, appDir, uuid string, sessionID string, opts ...
 			opt(&options)
 		}
 	}
-	if options.dataDir == "" {
-		options.dataDir = filepath.Join(appDir, "data")
-	}
-	if abs, err := filepath.Abs(options.dataDir); err == nil {
-		options.dataDir = abs
-	}
 
-	if err := os.MkdirAll(options.dataDir, 0o755); err != nil {
+	dataDir := filepath.Join(workDir, "data")
+
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create embedded crush data directory: %w", err)
 	}
 
-	store, err := config.LoadEmbedded(options.config, appDir, options.dataDir, options.debug)
+	store, err := config.LoadEmbedded(options.config, workDir, dataDir, options.debug)
 	if err != nil {
 		return nil, err
 	}
 	store.Overrides().SkipPermissionRequests = options.skipPermissionRequests
 	store.Overrides().DisableUpdateCheck = options.disableUpdateCheck
 
-	conn, err := db.Connect(ctx, options.dataDir)
+	conn, err := db.Connect(ctx, dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -456,70 +394,18 @@ func defaultEmbeddedConfig() *Config {
 		Schema: defaultSchema,
 		Options: &config.Options{
 			DisableProviderAutoUpdate: true,
+			DisableDefaultProviders:   true,
 			DisableMetrics:            true,
 			DisableNotifications:      true,
 			Progress:                  &progress,
 			AutoLSP:                   &autoLSP,
+			Attribution: &config.Attribution{
+				TrailerStyle:  config.TrailerStyleCoAuthoredBy,
+				GeneratedWith: false,
+				ProductName:   "Loop",
+				ContactEmail:  "loop@pingcap.cn",
+			},
 		},
 		Permissions: &config.Permissions{},
 	}
-}
-
-type sessionService struct {
-	session.Service
-	mu        sync.RWMutex
-	current   string
-	sessionID string
-}
-
-func newSessionService(internal session.Service, sessionID string) *sessionService {
-	return &sessionService{Service: internal, sessionID: sessionID}
-}
-
-func (ss *sessionService) Create(ctx context.Context, title string) (session.Session, error) {
-	if ss.sessionID != "" {
-		s, err := ss.Service.Get(ctx, ss.sessionID)
-		if err == nil {
-			ss.setCurrent(s.ID)
-			return s, nil
-		}
-	}
-
-	s, err := ss.Service.Create(ctx, title)
-	if err == nil {
-		ss.setCurrent(s.ID)
-	}
-	return s, err
-}
-
-func (ss *sessionService) Get(ctx context.Context, id string) (session.Session, error) {
-	s, err := ss.Service.Get(ctx, id)
-	if err == nil && s.ParentSessionID == "" {
-		ss.setCurrent(s.ID)
-	}
-	return s, err
-}
-
-func (ss *sessionService) GetLast(ctx context.Context) (session.Session, error) {
-	s, err := ss.Service.GetLast(ctx)
-	if err == nil {
-		ss.setCurrent(s.ID)
-	}
-	return s, err
-}
-
-func (ss *sessionService) CurrentSessionID() string {
-	ss.mu.RLock()
-	defer ss.mu.RUnlock()
-	return ss.current
-}
-
-func (ss *sessionService) SetCurrentSessionID(id string) {
-	ss.setCurrent(id)
-}
-
-func (ss *sessionService) setCurrent(id string) {
-	ss.mu.Lock()
-	defer ss.mu.Unlock()
-	ss.current = id
 }

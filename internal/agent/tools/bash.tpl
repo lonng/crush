@@ -65,14 +65,14 @@ When user asks to create git commit:
    Commit message here.
 
 {{ if .Attribution.GeneratedWith }}
-   💘 Generated with Crush
+   💘 Generated with {{ .Attribution.ProductName }}
 {{ end}}
 {{if eq .Attribution.TrailerStyle "assisted-by" }}
 
-   Assisted-by: {{ .ModelName }} via Crush <crush@charm.land>
+   Assisted-by: {{ .ModelName }} via {{ .Attribution.ProductName }} <{{ .Attribution.ContactEmail }}>
 {{ else if eq .Attribution.TrailerStyle "co-authored-by" }}
 
-   Co-Authored-By: Crush <crush@charm.land>
+   Co-Authored-By: {{ .Attribution.ProductName }} <{{ .Attribution.ContactEmail }}>
 {{ end }}
 
    EOF
@@ -124,7 +124,7 @@ Use gh command for ALL GitHub tasks. When user asks to create PR:
    [Checklist of TODOs...]
 
 {{ if .Attribution.GeneratedWith}}
-   💘 Generated with Crush
+   💘 Generated with {{ .Attribution.ProductName }}
 {{ end }}
 
    EOF

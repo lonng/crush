@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"iter"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
@@ -224,7 +225,7 @@ func (w *AppWorkspace) LSPStopAll(ctx context.Context) {
 }
 
 func (w *AppWorkspace) LSPGetStates() map[string]LSPClientInfo {
-	states := app.GetLSPStates()
+	states := w.app.LSPEvents.GetStates()
 	result := make(map[string]LSPClientInfo, len(states))
 	for k, v := range states {
 		result[k] = LSPClientInfo{
@@ -239,7 +240,7 @@ func (w *AppWorkspace) LSPGetStates() map[string]LSPClientInfo {
 }
 
 func (w *AppWorkspace) LSPGetDiagnosticCounts(name string) lsp.DiagnosticCounts {
-	state, ok := app.GetLSPState(name)
+	state, ok := w.app.LSPEvents.GetState(name)
 	if !ok || state.Client == nil {
 		return lsp.DiagnosticCounts{}
 	}
@@ -307,23 +308,27 @@ func (w *AppWorkspace) InitializePrompt() (string, error) {
 // -- MCP operations --
 
 func (w *AppWorkspace) MCPGetStates() map[string]mcptools.ClientInfo {
-	return mcptools.GetStates()
+	return w.app.MCPManager.GetStates()
+}
+
+func (w *AppWorkspace) MCPResources() iter.Seq2[string, []*mcptools.Resource] {
+	return w.app.MCPManager.Resources()
 }
 
 func (w *AppWorkspace) MCPRefreshPrompts(ctx context.Context, name string) {
-	mcptools.RefreshPrompts(ctx, name)
+	w.app.MCPManager.RefreshPrompts(ctx, name)
 }
 
 func (w *AppWorkspace) MCPRefreshResources(ctx context.Context, name string) {
-	mcptools.RefreshResources(ctx, name)
+	w.app.MCPManager.RefreshResources(ctx, name)
 }
 
 func (w *AppWorkspace) RefreshMCPTools(ctx context.Context, name string) {
-	mcptools.RefreshTools(ctx, w.store, name)
+	w.app.MCPManager.RefreshTools(ctx, w.store, name)
 }
 
 func (w *AppWorkspace) ReadMCPResource(ctx context.Context, name, uri string) ([]MCPResourceContents, error) {
-	contents, err := mcptools.ReadResource(ctx, w.store, name, uri)
+	contents, err := w.app.MCPManager.ReadResource(ctx, w.store, name, uri)
 	if err != nil {
 		return nil, err
 	}
@@ -340,7 +345,11 @@ func (w *AppWorkspace) ReadMCPResource(ctx context.Context, name, uri string) ([
 }
 
 func (w *AppWorkspace) GetMCPPrompt(clientID, promptID string, args map[string]string) (string, error) {
-	return commands.GetMCPPrompt(w.store, clientID, promptID, args)
+	return commands.GetMCPPromptWithManager(w.store, clientID, promptID, args, w.app.MCPManager)
+}
+
+func (w *AppWorkspace) LoadMCPPrompts() ([]commands.MCPPrompt, error) {
+	return commands.LoadMCPPromptsWithManager(w.app.MCPManager)
 }
 
 func (w *AppWorkspace) EnableDockerMCP(ctx context.Context) error {
@@ -349,14 +358,14 @@ func (w *AppWorkspace) EnableDockerMCP(ctx context.Context) error {
 		return err
 	}
 
-	if err := mcptools.InitializeSingle(ctx, config.DockerMCPName, w.store); err != nil {
-		disableErr := mcptools.DisableSingle(w.store, config.DockerMCPName)
+	if err := w.app.MCPManager.InitializeSingle(ctx, config.DockerMCPName, w.store); err != nil {
+		disableErr := w.app.MCPManager.DisableSingle(w.store, config.DockerMCPName)
 		delete(w.store.Config().MCP, config.DockerMCPName)
 		return fmt.Errorf("failed to start docker MCP: %w", errors.Join(err, disableErr))
 	}
 
 	if err := w.store.PersistDockerMCPConfig(mcpConfig); err != nil {
-		disableErr := mcptools.DisableSingle(w.store, config.DockerMCPName)
+		disableErr := w.app.MCPManager.DisableSingle(w.store, config.DockerMCPName)
 		delete(w.store.Config().MCP, config.DockerMCPName)
 		return fmt.Errorf("docker MCP started but failed to persist configuration: %w", errors.Join(err, disableErr))
 	}
@@ -365,7 +374,7 @@ func (w *AppWorkspace) EnableDockerMCP(ctx context.Context) error {
 }
 
 func (w *AppWorkspace) DisableDockerMCP() error {
-	if err := mcptools.DisableSingle(w.store, config.DockerMCPName); err != nil {
+	if err := w.app.MCPManager.DisableSingle(w.store, config.DockerMCPName); err != nil {
 		return fmt.Errorf("failed to disable docker MCP: %w", err)
 	}
 	return w.store.DisableDockerMCP()

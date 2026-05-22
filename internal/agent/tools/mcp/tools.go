@@ -11,7 +11,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -25,21 +24,29 @@ type ToolResult struct {
 	MediaType string
 }
 
-var allTools = csync.NewMap[string, []*Tool]()
+// Tools returns all available MCP tools from the default manager.
+func Tools() iter.Seq2[string, []*Tool] {
+	return defaultManager.Tools()
+}
 
 // Tools returns all available MCP tools.
-func Tools() iter.Seq2[string, []*Tool] {
-	return allTools.Seq2()
+func (m *Manager) Tools() iter.Seq2[string, []*Tool] {
+	return m.allTools.Seq2()
+}
+
+// RunTool runs an MCP tool with the given input parameters on the default manager.
+func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string, input string) (ToolResult, error) {
+	return defaultManager.RunTool(ctx, cfg, name, toolName, input)
 }
 
 // RunTool runs an MCP tool with the given input parameters.
-func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string, input string) (ToolResult, error) {
+func (m *Manager) RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string, input string) (ToolResult, error) {
 	var args map[string]any
 	if err := json.Unmarshal([]byte(input), &args); err != nil {
 		return ToolResult{}, fmt.Errorf("error parsing parameters: %s", err)
 	}
 
-	c, err := getOrRenewClient(ctx, cfg, name)
+	c, err := m.getOrRenewClient(ctx, cfg, name)
 	if err != nil {
 		return ToolResult{}, err
 	}
@@ -108,10 +115,16 @@ func RunTool(ctx context.Context, cfg *config.ConfigStore, name, toolName string
 	}, nil
 }
 
-// RefreshTools gets the updated list of tools from the MCP and updates the
-// global state.
+// RefreshTools gets the updated list of tools from the MCP in the default
+// manager and updates its state.
 func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
-	session, ok := sessions.Get(name)
+	defaultManager.RefreshTools(ctx, cfg, name)
+}
+
+// RefreshTools gets the updated list of tools from the MCP and updates the
+// manager state.
+func (m *Manager) RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
+	session, ok := m.sessions.Get(name)
 	if !ok {
 		slog.Warn("Refresh tools: no session", "name", name)
 		return
@@ -119,15 +132,15 @@ func RefreshTools(ctx context.Context, cfg *config.ConfigStore, name string) {
 
 	tools, err := getTools(ctx, session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		m.updateState(name, StateError, err, nil, Counts{})
 		return
 	}
 
-	toolCount := updateTools(cfg, name, tools)
+	toolCount := m.updateTools(cfg, name, tools)
 
-	prev, _ := states.Get(name)
+	prev, _ := m.states.Get(name)
 	prev.Counts.Tools = toolCount
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	m.updateState(name, StateConnected, nil, session, prev.Counts)
 }
 
 func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
@@ -141,16 +154,16 @@ func getTools(ctx context.Context, session *ClientSession) ([]*Tool, error) {
 	return result.Tools, nil
 }
 
-func updateTools(cfg *config.ConfigStore, name string, tools []*Tool) int {
+func (m *Manager) updateTools(cfg *config.ConfigStore, name string, tools []*Tool) int {
 	mcpCfg, ok := cfg.Config().MCP[name]
 	if ok {
 		tools = filterTools(mcpCfg, tools)
 	}
 	if len(tools) == 0 {
-		allTools.Del(name)
+		m.allTools.Del(name)
 		return 0
 	}
-	allTools.Set(name, tools)
+	m.allTools.Set(name, tools)
 	return len(tools)
 }
 

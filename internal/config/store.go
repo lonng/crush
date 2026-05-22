@@ -32,6 +32,7 @@ type fileSnapshot struct {
 // the lifetime of the process (or workspace).
 type RuntimeOverrides struct {
 	SkipPermissionRequests bool
+	DisableUpdateCheck     bool
 }
 
 // ConfigStore is the single entry point for all config access. It owns the
@@ -50,6 +51,7 @@ type ConfigStore struct {
 	snapshots          map[string]fileSnapshot // path -> snapshot at last capture
 	autoReloadDisabled bool                    // set during load/reload to prevent re-entrancy
 	reloadInProgress   bool                    // set during reload to avoid disk writes mid-reload
+	embedded           bool                    // true for in-process hosts using in-memory config
 }
 
 // Config returns the pure-data config struct (read-only after load).
@@ -637,6 +639,10 @@ func (s *ConfigStore) captureStalenessSnapshot(paths []string) {
 // config atomically. It rebuilds the staleness snapshot after successful reload.
 // On failure, the store state is rolled back to its previous state.
 func (s *ConfigStore) ReloadFromDisk(ctx context.Context) error {
+	if s.embedded {
+		return nil
+	}
+
 	if s.workingDir == "" {
 		return fmt.Errorf("cannot reload: working directory not set")
 	}

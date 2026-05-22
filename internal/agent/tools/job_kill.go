@@ -27,6 +27,13 @@ type JobKillResponseMetadata struct {
 }
 
 func NewJobKillTool() fantasy.AgentTool {
+	return NewJobKillToolWithManager(shell.GetBackgroundShellManager())
+}
+
+func NewJobKillToolWithManager(bgManager *shell.BackgroundShellManager) fantasy.AgentTool {
+	if bgManager == nil {
+		bgManager = shell.GetBackgroundShellManager()
+	}
 	return fantasy.NewAgentTool(
 		JobKillToolName,
 		jobKillDescription,
@@ -34,8 +41,6 @@ func NewJobKillTool() fantasy.AgentTool {
 			if params.ShellID == "" {
 				return fantasy.NewTextErrorResponse("missing shell_id"), nil
 			}
-
-			bgManager := shell.GetBackgroundShellManager()
 
 			bgShell, ok := bgManager.Get(params.ShellID)
 			if !ok {

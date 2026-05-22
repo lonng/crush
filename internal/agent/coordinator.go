@@ -22,6 +22,7 @@ import (
 	"github.com/charmbracelet/crush/internal/agent/notify"
 	"github.com/charmbracelet/crush/internal/agent/prompt"
 	"github.com/charmbracelet/crush/internal/agent/tools"
+	mcptools "github.com/charmbracelet/crush/internal/agent/tools/mcp"
 	"github.com/charmbracelet/crush/internal/config"
 	"github.com/charmbracelet/crush/internal/event"
 	"github.com/charmbracelet/crush/internal/filetracker"
@@ -35,6 +36,7 @@ import (
 	"github.com/charmbracelet/crush/internal/permission"
 	"github.com/charmbracelet/crush/internal/pubsub"
 	"github.com/charmbracelet/crush/internal/session"
+	"github.com/charmbracelet/crush/internal/shell"
 	"github.com/charmbracelet/crush/internal/skills"
 	"golang.org/x/sync/errgroup"
 
@@ -88,14 +90,16 @@ type Coordinator interface {
 }
 
 type coordinator struct {
-	cfg         *config.ConfigStore
-	sessions    session.Service
-	messages    message.Service
-	permissions permission.Service
-	history     history.Service
-	filetracker filetracker.Service
-	lspManager  *lsp.Manager
-	notify      pubsub.Publisher[notify.Notification]
+	cfg          *config.ConfigStore
+	sessions     session.Service
+	messages     message.Service
+	permissions  permission.Service
+	history      history.Service
+	filetracker  filetracker.Service
+	lspManager   *lsp.Manager
+	mcpManager   *mcptools.Manager
+	shellManager *shell.BackgroundShellManager
+	notify       pubsub.Publisher[notify.Notification]
 
 	currentAgent SessionAgent
 	agents       map[string]SessionAgent
@@ -117,6 +121,8 @@ func NewCoordinator(
 	history history.Service,
 	filetracker filetracker.Service,
 	lspManager *lsp.Manager,
+	mcpManager *mcptools.Manager,
+	shellManager *shell.BackgroundShellManager,
 	notify pubsub.Publisher[notify.Notification],
 ) (Coordinator, error) {
 	// Discover skills once at session start.
@@ -131,6 +137,8 @@ func NewCoordinator(
 		history:      history,
 		filetracker:  filetracker,
 		lspManager:   lspManager,
+		mcpManager:   cmp.Or(mcpManager, mcptools.DefaultManager()),
+		shellManager: cmp.Or(shellManager, shell.GetBackgroundShellManager()),
 		notify:       notify,
 		agents:       make(map[string]SessionAgent),
 		allSkills:    allSkills,
@@ -437,6 +445,7 @@ func (c *coordinator) buildAgent(ctx context.Context, prompt *prompt.Prompt, age
 		Sessions:             c.sessions,
 		Messages:             c.messages,
 		Tools:                nil,
+		MCPManager:           c.mcpManager,
 		Notify:               c.notify,
 	})
 
@@ -495,13 +504,12 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		hookRunner = hooks.NewRunner(preToolHooks, c.cfg.WorkingDir(), c.cfg.WorkingDir())
 	}
 
-	allTools = append(
-		allTools,
-		tools.NewBashTool(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelID),
-		tools.NewCrushInfoTool(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker),
+	allTools = append(allTools,
+		tools.NewBashToolWithManager(c.permissions, c.cfg.WorkingDir(), c.cfg.Config().Options.Attribution, modelID, c.shellManager),
+		tools.NewCrushInfoToolWithMCPManager(c.cfg, c.lspManager, c.allSkills, c.activeSkills, c.skillTracker, c.mcpManager),
 		tools.NewCrushLogsTool(logFile),
-		tools.NewJobOutputTool(),
-		tools.NewJobKillTool(),
+		tools.NewJobOutputToolWithManager(c.shellManager),
+		tools.NewJobKillToolWithManager(c.shellManager),
 		tools.NewDownloadTool(c.permissions, c.cfg.WorkingDir(), nil),
 		tools.NewEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
 		tools.NewMultiEditTool(c.lspManager, c.permissions, c.history, c.filetracker, c.cfg.WorkingDir()),
@@ -523,8 +531,8 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 	if len(c.cfg.Config().MCP) > 0 {
 		allTools = append(
 			allTools,
-			tools.NewListMCPResourcesTool(c.cfg, c.permissions),
-			tools.NewReadMCPResourceTool(c.cfg, c.permissions),
+			tools.NewListMCPResourcesToolWithManager(c.cfg, c.permissions, c.mcpManager),
+			tools.NewReadMCPResourceToolWithManager(c.cfg, c.permissions, c.mcpManager),
 		)
 	}
 
@@ -535,7 +543,7 @@ func (c *coordinator) buildTools(ctx context.Context, agent config.Agent, isSubA
 		}
 	}
 
-	for _, tool := range tools.GetMCPTools(c.permissions, c.cfg, c.cfg.WorkingDir()) {
+	for _, tool := range tools.GetMCPToolsWithManager(c.permissions, c.cfg, c.cfg.WorkingDir(), c.mcpManager) {
 		if agent.AllowedMCP == nil {
 			// No MCP restrictions
 			filteredTools = append(filteredTools, tool)

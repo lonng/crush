@@ -112,6 +112,7 @@ type sessionAgent struct {
 	systemPromptPrefix *csync.Value[string]
 	systemPrompt       *csync.Value[string]
 	tools              *csync.Slice[fantasy.AgentTool]
+	mcpManager         *mcp.Manager
 
 	isSubAgent           bool
 	sessions             session.Service
@@ -135,6 +136,7 @@ type SessionAgentOptions struct {
 	Sessions             session.Service
 	Messages             message.Service
 	Tools                []fantasy.AgentTool
+	MCPManager           *mcp.Manager
 	Notify               pubsub.Publisher[notify.Notification]
 }
 
@@ -146,6 +148,7 @@ func NewSessionAgent(
 		smallModel:           csync.NewValue(opts.SmallModel),
 		systemPromptPrefix:   csync.NewValue(opts.SystemPromptPrefix),
 		systemPrompt:         csync.NewValue(opts.SystemPrompt),
+		mcpManager:           cmp.Or(opts.MCPManager, mcp.DefaultManager()),
 		isSubAgent:           opts.IsSubAgent,
 		sessions:             opts.Sessions,
 		messages:             opts.Messages,
@@ -184,7 +187,7 @@ func (a *sessionAgent) Run(ctx context.Context, call SessionAgentCall) (*fantasy
 	promptPrefix := a.systemPromptPrefix.Get()
 	var instructions strings.Builder
 
-	for _, server := range mcp.GetStates() {
+	for _, server := range a.mcpManager.GetStates() {
 		if server.State != mcp.StateConnected {
 			continue
 		}

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"iter"
 	"log/slog"
 	"math/rand"
 	"net/http"
@@ -229,7 +230,7 @@ type UI struct {
 	}
 
 	// lsp
-	lspStates map[string]app.LSPClientInfo
+	lspStates map[string]workspace.LSPClientInfo
 
 	// mcp
 	mcpStates map[string]mcp.ClientInfo
@@ -304,6 +305,24 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		com.Styles.Completions.Focused,
 		com.Styles.Completions.Match,
 	)
+	if source, ok := com.Workspace.(interface {
+		MCPResources() iter.Seq2[string, []*mcp.Resource]
+	}); ok {
+		comp.SetResourceLoader(func() []completions.ResourceCompletionValue {
+			var resources []completions.ResourceCompletionValue
+			for mcpName, mcpResources := range source.MCPResources() {
+				for _, r := range mcpResources {
+					resources = append(resources, completions.ResourceCompletionValue{
+						MCPName:  mcpName,
+						URI:      r.URI,
+						Title:    r.Name,
+						MIMEType: r.MIMEType,
+					})
+				}
+			}
+			return resources
+		})
+	}
 
 	todoSpinner := spinner.New(
 		spinner.WithSpinner(spinner.MiniDot),
@@ -337,7 +356,7 @@ func New(com *common.Common, initialSessionID string, continueLast bool) *UI {
 		completions:         comp,
 		attachments:         attachments,
 		todoSpinner:         todoSpinner,
-		lspStates:           make(map[string]app.LSPClientInfo),
+		lspStates:           make(map[string]workspace.LSPClientInfo),
 		mcpStates:           make(map[string]mcp.ClientInfo),
 		notifyBackend:       notification.NoopBackend{},
 		notifyWindowFocused: true,
@@ -474,7 +493,17 @@ func (m *UI) loadCustomCommands() tea.Cmd {
 
 // loadMCPrompts loads the MCP prompts asynchronously.
 func (m *UI) loadMCPrompts() tea.Msg {
-	prompts, err := commands.LoadMCPPrompts()
+	var (
+		prompts []commands.MCPPrompt
+		err     error
+	)
+	if loader, ok := m.com.Workspace.(interface {
+		LoadMCPPrompts() ([]commands.MCPPrompt, error)
+	}); ok {
+		prompts, err = loader.LoadMCPPrompts()
+	} else {
+		prompts, err = commands.LoadMCPPrompts()
+	}
 	if err != nil {
 		slog.Error("Failed to load MCP prompts", "error", err)
 	}
@@ -642,7 +671,7 @@ func (m *UI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case pubsub.Event[history.File]:
 		cmds = append(cmds, m.handleFileEvent(msg.Payload))
 	case pubsub.Event[app.LSPEvent]:
-		m.lspStates = app.GetLSPStates()
+		m.lspStates = m.com.Workspace.LSPGetStates()
 	case pubsub.Event[skills.Event]:
 		m.skillStates = msg.Payload.States
 	case pubsub.Event[mcp.Event]:

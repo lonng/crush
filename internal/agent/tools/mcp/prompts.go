@@ -6,22 +6,30 @@ import (
 	"log/slog"
 
 	"github.com/charmbracelet/crush/internal/config"
-	"github.com/charmbracelet/crush/internal/csync"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 type Prompt = mcp.Prompt
 
-var allPrompts = csync.NewMap[string, []*Prompt]()
+// Prompts returns all available MCP prompts from the default manager.
+func Prompts() iter.Seq2[string, []*Prompt] {
+	return defaultManager.Prompts()
+}
 
 // Prompts returns all available MCP prompts.
-func Prompts() iter.Seq2[string, []*Prompt] {
-	return allPrompts.Seq2()
+func (m *Manager) Prompts() iter.Seq2[string, []*Prompt] {
+	return m.allPrompts.Seq2()
+}
+
+// GetPromptMessages retrieves the content of an MCP prompt with the given
+// arguments from the default manager.
+func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName, promptName string, args map[string]string) ([]string, error) {
+	return defaultManager.GetPromptMessages(ctx, cfg, clientName, promptName, args)
 }
 
 // GetPromptMessages retrieves the content of an MCP prompt with the given arguments.
-func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName, promptName string, args map[string]string) ([]string, error) {
-	c, err := getOrRenewClient(ctx, cfg, clientName)
+func (m *Manager) GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName, promptName string, args map[string]string) ([]string, error) {
+	c, err := m.getOrRenewClient(ctx, cfg, clientName)
 	if err != nil {
 		return nil, err
 	}
@@ -45,10 +53,16 @@ func GetPromptMessages(ctx context.Context, cfg *config.ConfigStore, clientName,
 	return messages, nil
 }
 
-// RefreshPrompts gets the updated list of prompts from the MCP and updates the
-// global state.
+// RefreshPrompts gets the updated list of prompts from the MCP in the default
+// manager and updates its state.
 func RefreshPrompts(ctx context.Context, name string) {
-	session, ok := sessions.Get(name)
+	defaultManager.RefreshPrompts(ctx, name)
+}
+
+// RefreshPrompts gets the updated list of prompts from the MCP and updates the
+// manager state.
+func (m *Manager) RefreshPrompts(ctx context.Context, name string) {
+	session, ok := m.sessions.Get(name)
 	if !ok {
 		slog.Warn("Refresh prompts: no session", "name", name)
 		return
@@ -56,15 +70,15 @@ func RefreshPrompts(ctx context.Context, name string) {
 
 	prompts, err := getPrompts(ctx, session)
 	if err != nil {
-		updateState(name, StateError, err, nil, Counts{})
+		m.updateState(name, StateError, err, nil, Counts{})
 		return
 	}
 
-	updatePrompts(name, prompts)
+	m.updatePrompts(name, prompts)
 
-	prev, _ := states.Get(name)
+	prev, _ := m.states.Get(name)
 	prev.Counts.Prompts = len(prompts)
-	updateState(name, StateConnected, nil, session, prev.Counts)
+	m.updateState(name, StateConnected, nil, session, prev.Counts)
 }
 
 func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
@@ -78,11 +92,11 @@ func getPrompts(ctx context.Context, c *ClientSession) ([]*Prompt, error) {
 	return result.Prompts, nil
 }
 
-// updatePrompts updates the global mcpPrompts and mcpClient2Prompts maps
-func updatePrompts(mcpName string, prompts []*Prompt) {
+// updatePrompts updates the manager prompt maps.
+func (m *Manager) updatePrompts(mcpName string, prompts []*Prompt) {
 	if len(prompts) == 0 {
-		allPrompts.Del(mcpName)
+		m.allPrompts.Del(mcpName)
 		return
 	}
-	allPrompts.Set(mcpName, prompts)
+	m.allPrompts.Set(mcpName, prompts)
 }

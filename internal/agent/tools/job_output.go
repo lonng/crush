@@ -31,6 +31,13 @@ type JobOutputResponseMetadata struct {
 }
 
 func NewJobOutputTool() fantasy.AgentTool {
+	return NewJobOutputToolWithManager(shell.GetBackgroundShellManager())
+}
+
+func NewJobOutputToolWithManager(bgManager *shell.BackgroundShellManager) fantasy.AgentTool {
+	if bgManager == nil {
+		bgManager = shell.GetBackgroundShellManager()
+	}
 	return fantasy.NewAgentTool(
 		JobOutputToolName,
 		jobOutputDescription,
@@ -39,7 +46,6 @@ func NewJobOutputTool() fantasy.AgentTool {
 				return fantasy.NewTextErrorResponse("missing shell_id"), nil
 			}
 
-			bgManager := shell.GetBackgroundShellManager()
 			bgShell, ok := bgManager.Get(params.ShellID)
 			if !ok {
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("background shell not found: %s", params.ShellID)), nil

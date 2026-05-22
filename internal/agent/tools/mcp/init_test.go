@@ -405,10 +405,8 @@ func TestCreateTransport_HeadersResolution(t *testing.T) {
 // error instead of the MCP silently sitting in "starting" or being
 // spawned with an empty credential.
 //
-// These subtests cannot run in parallel: `states` is a package-level
-// csync.Map and each assertion reads the entry written by the call
-// under test. They do use unique MCP names per subtest to keep them
-// independent regardless of ordering.
+// Each subtest uses a fresh Manager so state written by createSession is
+// isolated from other tests and app instances.
 func TestCreateSession_ResolutionFailureUpdatesState(t *testing.T) {
 	r := shellResolverWithPath(t, nil)
 
@@ -504,18 +502,13 @@ func TestCreateSession_ResolutionFailureUpdatesState(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			// Guarantee a clean slate on the shared state map so a
-			// stale entry from another test can't satisfy the
-			// assertion.
-			states.Del(tc.mcpName)
-			t.Cleanup(func() { states.Del(tc.mcpName) })
-
-			sess, err := createSession(t.Context(), tc.mcpName, tc.cfg, r)
+			manager := NewManager()
+			sess, err := manager.createSession(t.Context(), tc.mcpName, tc.cfg, r)
 			require.Error(t, err)
 			require.Nil(t, sess)
 			require.Contains(t, err.Error(), tc.wantErrContains)
 
-			info, ok := GetState(tc.mcpName)
+			info, ok := manager.GetState(tc.mcpName)
 			require.True(t, ok, "state entry must be written for %q", tc.mcpName)
 			require.Equal(t, StateError, info.State, "expected StateError, got %s", info.State)
 			require.Error(t, info.Error, "state must carry the failure error")
@@ -523,4 +516,33 @@ func TestCreateSession_ResolutionFailureUpdatesState(t *testing.T) {
 			require.Nil(t, info.Client, "no client session on failure")
 		})
 	}
+}
+
+func TestManager_StateAndCatalogIsolation(t *testing.T) {
+	t.Parallel()
+
+	first := NewManager()
+	second := NewManager()
+
+	first.updateState("shared-name", StateConnected, nil, nil, Counts{Tools: 1})
+	first.updatePrompts("shared-name", []*Prompt{{Name: "prompt-a"}})
+	first.updateResources("shared-name", []*Resource{{URI: "file://a"}})
+
+	cfg := config.NewTestStore(&config.Config{
+		MCP: map[string]config.MCPConfig{"shared-name": {}},
+	})
+	require.Equal(t, 1, first.updateTools(cfg, "shared-name", []*Tool{{Name: "tool-a"}}))
+
+	_, ok := second.GetState("shared-name")
+	require.False(t, ok, "second manager must not see first manager state")
+	require.Empty(t, maps.Collect(second.Tools()))
+	require.Empty(t, maps.Collect(second.Prompts()))
+	require.Empty(t, maps.Collect(second.Resources()))
+
+	state, ok := first.GetState("shared-name")
+	require.True(t, ok)
+	require.Equal(t, StateConnected, state.State)
+	require.Len(t, maps.Collect(first.Tools())["shared-name"], 1)
+	require.Len(t, maps.Collect(first.Prompts())["shared-name"], 1)
+	require.Len(t, maps.Collect(first.Resources())["shared-name"], 1)
 }

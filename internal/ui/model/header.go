@@ -122,7 +122,8 @@ func (h *header) drawHeader(
 	b.WriteString(details)
 
 	view := uv.NewStyledString(
-		t.Header.Wrapper.Padding(0, rightPadding, 0, leftPadding).Render(b.String()))
+		t.Header.Wrapper.Padding(0, rightPadding, 0, leftPadding).Render(b.String()),
+	)
 	view.Draw(scr, area)
 }
 
@@ -147,7 +148,11 @@ func renderHeaderDetails(
 	model := com.Config().GetModelByType(agentCfg.Model)
 	if model != nil && model.ContextWindow > 0 {
 		percentage := (float64(session.CompletionTokens+session.PromptTokens) / float64(model.ContextWindow)) * 100
-		formattedPercentage := t.Header.Percentage.Render(fmt.Sprintf("%d%%", int(percentage)))
+		percentageText := fmt.Sprintf("%d%%", int(percentage))
+		if session.EstimatedUsage {
+			percentageText = "~" + percentageText
+		}
+		formattedPercentage := t.Header.Percentage.Render(percentageText)
 		parts = append(parts, formattedPercentage)
 	}
 

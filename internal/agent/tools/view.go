@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	_ "embed"
+	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"io/fs"
 	"net/http"
@@ -22,13 +24,30 @@ import (
 	"github.com/charmbracelet/crush/internal/skills"
 )
 
-//go:embed view.md
-var viewDescription []byte
+//go:embed view.md.tpl
+var viewDescriptionTmpl []byte
+
+var viewDescriptionTpl = template.Must(
+	template.New("viewDescription").
+		Parse(string(viewDescriptionTmpl)),
+)
+
+type viewDescriptionData struct {
+	DefaultReadLimit int
+	MaxViewSizeKB    int
+}
+
+func viewDescription() string {
+	return renderTemplate(viewDescriptionTpl, viewDescriptionData{
+		DefaultReadLimit: DefaultReadLimit,
+		MaxViewSizeKB:    MaxViewSize / 1024,
+	})
+}
 
 type ViewParams struct {
 	FilePath string `json:"file_path" description:"The path to the file to read"`
 	Offset   int    `json:"offset,omitempty" description:"The line number to start reading from (0-based)"`
-	Limit    int    `json:"limit,omitempty" description:"The number of lines to read (defaults to 2000)"`
+	Limit    int    `json:"limit,omitempty" description:"The number of lines to read (defaults to 200)"`
 }
 
 type ViewPermissionsParams struct {
@@ -55,9 +74,18 @@ type ViewResponseMetadata struct {
 const (
 	ViewToolName     = "view"
 	MaxViewSize      = 200 * 1024 // 200KB
-	DefaultReadLimit = 2000
+	DefaultReadLimit = 200
 	MaxLineLength    = 2000
 )
+
+type contentTooLargeError struct {
+	Size int
+	Max  int
+}
+
+func (e contentTooLargeError) Error() string {
+	return fmt.Sprintf("content section is too large (%d bytes). Maximum size is %d bytes", e.Size, e.Max)
+}
 
 func NewViewTool(
 	lspManager *lsp.Manager,
@@ -69,7 +97,7 @@ func NewViewTool(
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		ViewToolName,
-		FirstLineDescription(viewDescription),
+		viewDescription(),
 		func(ctx context.Context, params ViewParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.FilePath == "" {
 				return fantasy.NewTextErrorResponse("file_path is required"), nil
@@ -106,7 +134,8 @@ func NewViewTool(
 
 			// Request permission for files outside working directory, unless it's a skill file.
 			if isOutsideWorkDir && !isSkillFile {
-				granted, permReqErr := permissions.Request(ctx,
+				granted, permReqErr := permissions.Request(
+					ctx,
 					permission.CreatePermissionRequest{
 						SessionID:   sessionID,
 						Path:        absFilePath,
@@ -162,12 +191,6 @@ func NewViewTool(
 				return fantasy.NewTextErrorResponse(fmt.Sprintf("Path is a directory, not a file: %s", filePath)), nil
 			}
 
-			// Based on the specifications we should not limit the skills read.
-			if !isSkillFile && fileInfo.Size() > MaxViewSize {
-				return fantasy.NewTextErrorResponse(fmt.Sprintf("File is too large (%d bytes). Maximum size is %d bytes",
-					fileInfo.Size(), MaxViewSize)), nil
-			}
-
 			// Set default limit if not provided (no limit for SKILL.md files)
 			if params.Limit <= 0 {
 				if isSkillFile {
@@ -179,6 +202,10 @@ func NewViewTool(
 
 			isSupportedImage, mimeType := getImageMimeType(filePath)
 			if isSupportedImage {
+				if fileInfo.Size() > MaxViewSize {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Image file is too large (%d bytes). Maximum size is %d bytes",
+						fileInfo.Size(), MaxViewSize)), nil
+				}
 				if !GetSupportsImagesFromContext(ctx) {
 					modelName := GetModelNameFromContext(ctx)
 					return fantasy.NewTextErrorResponse(fmt.Sprintf("This model (%s) does not support image data.", modelName)), nil
@@ -201,8 +228,17 @@ func NewViewTool(
 			}
 
 			// Read the file content
-			content, hasMore, err := readTextFile(filePath, params.Offset, params.Limit)
+			maxContentSize := MaxViewSize
+			if isSkillFile {
+				maxContentSize = 0
+			}
+			content, hasMore, err := readTextFile(filePath, params.Offset, params.Limit, maxContentSize)
 			if err != nil {
+				var tooLarge contentTooLargeError
+				if errors.As(err, &tooLarge) {
+					return fantasy.NewTextErrorResponse(fmt.Sprintf("Content section is too large (%d bytes). Maximum size is %d bytes",
+						tooLarge.Size, tooLarge.Max)), nil
+				}
 				return fantasy.ToolResponse{}, fmt.Errorf("error reading file: %w", err)
 			}
 			if !utf8.ValidString(content) {
@@ -239,7 +275,8 @@ func NewViewTool(
 				fantasy.NewTextResponse(output),
 				meta,
 			), nil
-		})
+		},
+	)
 }
 
 func addLineNumbers(content string, startLine int) string {
@@ -267,40 +304,58 @@ func addLineNumbers(content string, startLine int) string {
 	return strings.Join(result, "\n")
 }
 
-func readTextFile(filePath string, offset, limit int) (string, bool, error) {
+func readTextFile(filePath string, offset, limit, maxContentSize int) (string, bool, error) {
 	file, err := os.Open(filePath)
 	if err != nil {
 		return "", false, err
 	}
 	defer file.Close()
 
-	scanner := NewLineScanner(file)
-	if offset > 0 {
-		skipped := 0
-		for skipped < offset && scanner.Scan() {
-			skipped++
-		}
-		if err = scanner.Err(); err != nil {
+	reader := bufio.NewReader(file)
+	skipped := 0
+	for skipped < offset {
+		_, err := reader.ReadString('\n')
+		if err != nil {
+			if err == io.EOF {
+				return "", false, nil
+			}
 			return "", false, err
 		}
+		skipped++
 	}
 
-	// Pre-allocate slice with expected capacity.
-	lines := make([]string, 0, limit)
+	lines := make([]string, 0, min(limit, DefaultReadLimit))
+	contentSize := 0
 
-	for len(lines) < limit && scanner.Scan() {
-		lineText := scanner.Text()
+	for len(lines) < limit {
+		lineText, err := reader.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return "", false, err
+		}
+		lineText = strings.TrimSuffix(lineText, "\n")
+		lineText = strings.TrimSuffix(lineText, "\r")
 		if len(lineText) > MaxLineLength {
 			lineText = lineText[:MaxLineLength] + "..."
 		}
+		projectedSize := contentSize + len(lineText)
+		if len(lines) > 0 {
+			projectedSize++
+		}
+		if maxContentSize > 0 && projectedSize > maxContentSize {
+			return "", false, contentTooLargeError{Size: projectedSize, Max: maxContentSize}
+		}
+		contentSize = projectedSize
 		lines = append(lines, lineText)
+		if err == io.EOF {
+			break
+		}
 	}
 
 	// Peek one more line only when we filled the limit.
-	hasMore := len(lines) == limit && scanner.Scan()
-
-	if err := scanner.Err(); err != nil {
-		return "", false, err
+	hasMore := false
+	if len(lines) == limit {
+		lineText, peekErr := reader.ReadString('\n')
+		hasMore = len(lineText) > 0 || peekErr == nil
 	}
 
 	return strings.Join(lines, "\n"), hasMore, nil
@@ -340,33 +395,6 @@ func sniffImageMimeType(data []byte, fallback string) string {
 		return sniffed
 	}
 	return fallback
-}
-
-type LineScanner struct {
-	scanner *bufio.Scanner
-}
-
-func NewLineScanner(r io.Reader) *LineScanner {
-	scanner := bufio.NewScanner(r)
-	// Increase buffer size to handle large lines (e.g., minified JSON, HTML)
-	// Default is 64KB, set to 1MB
-	buf := make([]byte, 0, 64*1024)
-	scanner.Buffer(buf, 1024*1024)
-	return &LineScanner{
-		scanner: scanner,
-	}
-}
-
-func (s *LineScanner) Scan() bool {
-	return s.scanner.Scan()
-}
-
-func (s *LineScanner) Text() string {
-	return s.scanner.Text()
-}
-
-func (s *LineScanner) Err() error {
-	return s.scanner.Err()
 }
 
 // isInSkillsPath checks if filePath is within any of the configured skills

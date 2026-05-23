@@ -15,7 +15,7 @@ const (
 )
 
 //go:embed job_output.md
-var jobOutputDescription []byte
+var jobOutputDescription string
 
 type JobOutputParams struct {
 	ShellID string `json:"shell_id" description:"The ID of the background shell to retrieve output from"`
@@ -40,7 +40,7 @@ func NewJobOutputToolWithManager(bgManager *shell.BackgroundShellManager) fantas
 	}
 	return fantasy.NewAgentTool(
 		JobOutputToolName,
-		FirstLineDescription(jobOutputDescription),
+		jobOutputDescription,
 		func(ctx context.Context, params JobOutputParams, call fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			if params.ShellID == "" {
 				return fantasy.NewTextErrorResponse("missing shell_id"), nil
@@ -93,5 +93,6 @@ func NewJobOutputToolWithManager(bgManager *shell.BackgroundShellManager) fantas
 
 			result := fmt.Sprintf("Status: %s\n\n%s", status, output)
 			return fantasy.WithResponseMetadata(fantasy.NewTextResponse(result), metadata), nil
-		})
+		},
+	)
 }

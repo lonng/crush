@@ -17,7 +17,7 @@ import (
 const CrushInfoToolName = "crush_info"
 
 //go:embed crush_info.md
-var crushInfoDescription []byte
+var crushInfoDescription string
 
 type CrushInfoParams struct{}
 
@@ -41,10 +41,11 @@ func NewCrushInfoToolWithMCPManager(
 ) fantasy.AgentTool {
 	return fantasy.NewAgentTool(
 		CrushInfoToolName,
-		string(crushInfoDescription),
+		crushInfoDescription,
 		func(ctx context.Context, _ CrushInfoParams, _ fantasy.ToolCall) (fantasy.ToolResponse, error) {
 			return fantasy.NewTextResponse(buildCrushInfoWithMCPManager(cfg, lspManager, allSkills, activeSkills, skillTracker, mcpManager)), nil
-		})
+		},
+	)
 }
 
 func buildCrushInfo(cfg *config.ConfigStore, lspManager *lsp.Manager, allSkills []*skills.Skill, activeSkills []*skills.Skill, skillTracker *skills.Tracker) string {

@@ -375,7 +375,7 @@ func NewApp(ctx context.Context, workDir, uuid string, sessionID string, opts ..
 		return nil, err
 	}
 
-	internalApp, err := app.New(ctx, conn, store)
+	internalApp, err := app.New(ctx, conn, store, nil)
 	if err != nil {
 		_ = conn.Close()
 		return nil, err

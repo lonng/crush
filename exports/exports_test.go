@@ -7,13 +7,37 @@ import (
 	"testing"
 )
 
+func newTestProviders(t *testing.T) *Providers {
+	t.Helper()
+	providers := NewProviders()
+	providers.Set("loop-test", ProviderConfig{
+		ID:      "loop-test",
+		Name:    "Loop Test",
+		Type:    ProviderTypeOpenAICompat,
+		BaseURL: "http://127.0.0.1:1/v1",
+		Models:  []Model{{ID: "test-large", Name: "Test Large", DefaultMaxTokens: 1024}},
+	})
+	return providers
+}
+
+func newTestConfig(t *testing.T) *Config {
+	t.Helper()
+	cfg := NewConfig()
+	cfg.Providers = newTestProviders(t)
+	cfg.Models = map[SelectedModelType]SelectedModel{
+		SelectedModelTypeLarge: {Provider: "loop-test", Model: "test-large"},
+		SelectedModelTypeSmall: {Provider: "loop-test", Model: "test-large"},
+	}
+	return cfg
+}
+
 func TestNewAppUsesEmbeddedConfigWithoutWritingWorkingDirConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
 	workingDir := t.TempDir()
 
-	app, err := NewApp(ctx, workingDir, "loop-agent", "")
+	app, err := NewApp(ctx, workingDir, "loop-agent", "", WithConfig(newTestConfig(t)))
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
 	}
@@ -35,8 +59,9 @@ func TestCurrentSessionIDTracksCreatedAndResumedSessions(t *testing.T) {
 	defer cancel()
 
 	workingDir := t.TempDir()
+	cfg := newTestConfig(t)
 
-	app, err := NewApp(ctx, workingDir, "loop-agent", "")
+	app, err := NewApp(ctx, workingDir, "loop-agent", "", WithConfig(cfg))
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
 	}
@@ -49,7 +74,7 @@ func TestCurrentSessionIDTracksCreatedAndResumedSessions(t *testing.T) {
 	}
 	app.Shutdown()
 
-	resumed, err := NewApp(ctx, workingDir, "loop-agent", sess.ID)
+	resumed, err := NewApp(ctx, workingDir, "loop-agent", sess.ID, WithConfig(cfg))
 	if err != nil {
 		t.Fatalf("NewApp for resume returned error: %v", err)
 	}
@@ -71,7 +96,7 @@ func TestSubscribeSessionsReturnsExportedEvents(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	app, err := NewApp(ctx, t.TempDir(), "loop-agent", "")
+	app, err := NewApp(ctx, t.TempDir(), "loop-agent", "", WithConfig(newTestConfig(t)))
 	if err != nil {
 		t.Fatalf("NewApp returned error: %v", err)
 	}

@@ -214,6 +214,7 @@ type appOptions struct {
 	debug                  bool
 	skipPermissionRequests bool
 	disableUpdateCheck     bool
+	dataDir                string
 }
 
 // WithConfig replaces the default embedded config. The config is cloned during
@@ -244,6 +245,14 @@ func WithSkipPermissionRequests(skip bool) Option {
 func WithDisableUpdateCheck(disable bool) Option {
 	return func(opts *appOptions) {
 		opts.disableUpdateCheck = disable
+	}
+}
+
+// WithDataDir overrides the data directory. When unset, NewApp uses
+// <workDir>/data.
+func WithDataDir(dir string) Option {
+	return func(opts *appOptions) {
+		opts.dataDir = dir
 	}
 }
 
@@ -358,6 +367,9 @@ func NewApp(ctx context.Context, workDir, uuid string, sessionID string, opts ..
 	}
 
 	dataDir := filepath.Join(workDir, "data")
+	if options.dataDir != "" {
+		dataDir = options.dataDir
+	}
 
 	if err := os.MkdirAll(dataDir, 0o755); err != nil {
 		return nil, fmt.Errorf("failed to create embedded crush data directory: %w", err)

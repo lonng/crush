@@ -146,6 +146,8 @@ func coderAgent(r *vcr.Recorder, env fakeEnv, large, small fantasy.LanguageModel
 	cfg.Config().Options.Attribution = &config.Attribution{
 		TrailerStyle:  "co-authored-by",
 		GeneratedWith: true,
+		ProductName:   "Crush",
+		ContactEmail:  "crush@charm.land",
 	}
 
 	// Clear some fields to avoid issues with VCR cassette matching.
